@@ -32,17 +32,25 @@ async def push_ntfy(title: str, body: str, severity: str = "info"):
 
     url = f"{config.NTFY_SERVER}/{config.NTFY_TOPIC}"
     headers = {
-        "Title": full_title.encode("utf-8").decode("utf-8"),
         "Priority": "high" if severity == "high" else ("default" if severity == "medium" else "low"),
         "Tags": severity,
+    }
+    # Use JSON body to avoid latin-1 header encoding errors with emoji
+    import json
+    payload = {
+        "topic": config.NTFY_TOPIC,
+        "title": full_title,
+        "message": body,
+        "priority": headers["Priority"],
+        "tags": [headers["Tags"]],
     }
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
-                url,
-                content=body.encode("utf-8"),
-                headers=headers,
+                config.NTFY_SERVER,
+                content=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json; charset=utf-8"},
             )
             if resp.status_code == 200:
                 logger.info(f"✅ ntfy 推送成功: {full_title}")

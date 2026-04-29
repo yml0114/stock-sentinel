@@ -13,7 +13,7 @@ if env_path.exists():
 # ── AI 分析 ──
 AI_API_KEY: str = os.getenv("AI_API_KEY", "")
 AI_API_URL: str = os.getenv("AI_API_URL", "https://api.tokex.top/v1")
-AI_MODEL: str = os.getenv("AI_MODEL", "deepseek-ai/deepseek-v4-pro")
+AI_MODEL: str = os.getenv("AI_MODEL", "mimov2.5pro")
 
 # ── ntfy.sh 推送 ──
 NTFY_TOPIC: str = os.getenv("NTFY_TOPIC", "stock-sentinel")
