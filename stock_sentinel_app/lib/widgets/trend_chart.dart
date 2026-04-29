@@ -21,12 +21,13 @@ class _TrendChartState extends State<TrendChart> {
   Offset? _crosshairPos;
 
   List<Map<String, dynamic>> get _points {
-    final raw = widget.trendData['data'] as List? ?? [];
+    final raw = widget.trendData['trend'] as List? ?? [];
     return raw.cast<Map<String, dynamic>>();
   }
 
   double get _prevClose {
-    return (widget.trendData['prev_close'] as num?)?.toDouble() ?? 0;
+    final rt = widget.trendData['realtime'] as Map<String, dynamic>? ?? {};
+    return (rt['prevClose'] as num?)?.toDouble() ?? 0;
   }
 
   @override
@@ -102,8 +103,8 @@ class _TrendChartState extends State<TrendChart> {
 
     final p = _points[_crosshairIndex!];
     final price = (p['price'] as num?)?.toDouble() ?? 0;
-    final avg = (p['avg'] as num?)?.toDouble() ?? 0;
-    final time = p['time'] ?? '';
+    final avg = (p['avg_price'] as num?)?.toDouble() ?? 0;
+    final time = _shortenTime(p['time'] ?? '');
     final change = price - _prevClose;
     final changePct = _prevClose > 0 ? change / _prevClose * 100 : 0;
     final isUp = change >= 0;
@@ -134,6 +135,15 @@ class _TrendChartState extends State<TrendChart> {
         ]),
       ),
     );
+  }
+
+  /// "2026-04-29 09:35:00" → "09:35"
+  String _shortenTime(String raw) {
+    if (raw.length >= 16 && raw.contains(' ')) {
+      return raw.split(' ').last.substring(0, 5);
+    }
+    if (raw.length >= 5) return raw.substring(0, 5);
+    return raw;
   }
 }
 
@@ -166,7 +176,7 @@ class _TrendPainter extends CustomPainter {
 
     // Extract prices and compute range
     final prices = points.map((p) => (p['price'] as num?)?.toDouble() ?? 0).toList();
-    final avgs = points.map((p) => (p['avg'] as num?)?.toDouble() ?? 0).toList();
+    final avgs = points.map((p) => (p['avg_price'] as num?)?.toDouble() ?? 0).toList();
 
     double minP = prices.reduce(min);
     double maxP = prices.reduce(max);
@@ -315,7 +325,8 @@ class _TrendPainter extends CustomPainter {
     // Vertical grid lines (at key times)
     final timeIndices = <int>[];
     for (int i = 0; i < points.length; i++) {
-      final t = points[i]['time'] ?? '';
+      final rawTime = points[i]['time'] ?? '';
+      final t = _shortTime(rawTime);
       if (t == '09:30' || t == '10:00' || t == '10:30' || t == '11:00' ||
           t == '11:30' || t == '13:00' || t == '13:30' || t == '14:00' ||
           t == '14:30' || t == '15:00') {
@@ -335,7 +346,8 @@ class _TrendPainter extends CustomPainter {
     final chartWidth = size.width - leftPad - rightPad;
 
     for (int i = 0; i < points.length; i++) {
-      final t = points[i]['time'] ?? '';
+      final rawTime = points[i]['time'] ?? '';
+      final t = _shortTime(rawTime);
       if (!keyTimes.contains(t)) continue;
 
       // Only label every other key time to avoid overcrowding
@@ -430,7 +442,7 @@ class _TrendPainter extends CustomPainter {
     tp.paint(canvas, Offset(size.width - 28 - tp.width / 2, cy - tp.height / 2));
 
     // Time label on bottom
-    final time = points[idx]['time'] ?? '';
+    final time = _shortTime(points[idx]['time'] ?? '');
     final timeRect = RRect.fromRectAndRadius(
       Rect.fromCenter(center: Offset(cx, topPad + chartHeight + 14), width: 42, height: 16),
       const Radius.circular(3),
@@ -445,6 +457,15 @@ class _TrendPainter extends CustomPainter {
     // Dot at crosshair point
     canvas.drawCircle(Offset(cx, cy), 4, Paint()..color = const Color(0xFF00BCD4));
     canvas.drawCircle(Offset(cx, cy), 2, Paint()..color = Colors.white);
+  }
+
+  /// "2026-04-29 09:35:00" → "09:35"
+  String _shortTime(String raw) {
+    if (raw.length >= 16 && raw.contains(' ')) {
+      return raw.split(' ').last.substring(0, 5);
+    }
+    if (raw.length >= 5) return raw.substring(0, 5);
+    return raw;
   }
 
   @override
