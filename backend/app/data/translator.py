@@ -1,8 +1,9 @@
 """
-翻译模块 — 3引擎并行竞争，取最快结果
+翻译模块 v2 — 4引擎并行竞争，取最快结果 + 引擎黑名单 + 批量优化
 """
 import re
 import json
+import time
 import logging
 import requests
 import urllib.parse
@@ -12,10 +13,17 @@ logger = logging.getLogger(__name__)
 
 # 翻译缓存（内存）
 _cache: dict[str, str] = {}
-_CACHE_MAX = 3000
+_CACHE_MAX = 5000
 
 # SimplyTranslate 每次最大字符限制
 _MAX_CHUNK = 450
+
+# 引擎黑名单（运行时自动维护，避免反复等待超时引擎）
+_engine_blacklist: dict[str, float] = {}  # engine_name -> blacklisted_until_time
+_ENGINE_BLACKLIST_TTL = 600  # 10分钟后重试
+
+# 全局线程池（复用，避免每次创建销毁）
+_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='translate')
 
 
 def _is_chinese(text: str) -> bool:
@@ -23,6 +31,20 @@ def _is_chinese(text: str) -> bool:
         return True
     chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
     return chinese_chars / max(len(text), 1) > 0.3
+
+
+def _is_blacklisted(engine_name: str) -> bool:
+    if engine_name not in _engine_blacklist:
+        return False
+    if time.time() > _engine_blacklist[engine_name]:
+        del _engine_blacklist[engine_name]
+        return False
+    return True
+
+
+def _blacklist_engine(engine_name: str):
+    _engine_blacklist[engine_name] = time.time() + _ENGINE_BLACKLIST_TTL
+    logger.debug(f"翻译引擎 {engine_name} 加入黑名单 {_ENGINE_BLACKLIST_TTL}s")
 
 
 def _simplytranslate(text: str) -> str:
@@ -104,8 +126,17 @@ def _mymemory_translate(text: str) -> str:
     return ""
 
 
+# 引擎列表（按速度排序）
+_ENGINES = [
+    ('simply', _simplytranslate),
+    ('youdao', _youdao_translate),
+    ('mymemory', _mymemory_translate),
+    ('jina', _jina_translate),
+]
+
+
 def _translate_chunk(text: str) -> str:
-    """翻译单个chunk — 4引擎并行竞争，取最快结果"""
+    """翻译单个chunk — 多引擎并行竞争，取最快结果 + 黑名单"""
     if not text or len(text.strip()) < 3:
         return text
 
@@ -116,25 +147,31 @@ def _translate_chunk(text: str) -> str:
     if text in _cache:
         return _cache[text]
 
-    # 4引擎并行竞争
+    # 选出未黑名单的引擎
+    active_engines = [(name, fn) for name, fn in _ENGINES if not _is_blacklisted(name)]
+    if not active_engines:
+        # 所有引擎都黑名单了，用第一个
+        active_engines = [_ENGINES[0]]
+
+    # 并行竞争
     translated = ""
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {
-            pool.submit(_simplytranslate, text): 'simply',
-            pool.submit(_jina_translate, text): 'jina',
-            pool.submit(_youdao_translate, text): 'youdao',
-            pool.submit(_mymemory_translate, text): 'mymemory',
-        }
-        for future in as_completed(futures, timeout=8):
-            try:
-                result = future.result()
-                if result and result != text:
-                    translated = result
-                    for f in futures:
-                        f.cancel()
-                    break
-            except Exception:
-                continue
+    futures = {}
+    for name, fn in active_engines:
+        futures[_pool.submit(fn, text)] = name
+
+    for future in as_completed(futures, timeout=8):
+        engine_name = futures[future]
+        try:
+            result = future.result()
+            if result and result != text:
+                translated = result
+                # 取消其他
+                for f in futures:
+                    f.cancel()
+                break
+        except Exception:
+            _blacklist_engine(engine_name)
+            continue
 
     if translated:
         if len(_cache) < _CACHE_MAX:
@@ -222,16 +259,14 @@ def translate_news_items(items: list, source_filter: str = '') -> list:
     if not to_translate:
         return items
 
-    executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix='translate')
     translated_count = 0
-    futures = {executor.submit(_translate_single_item, item): item for item in to_translate}
-    for future in as_completed(futures, timeout=90):
+    futures = {_pool.submit(_translate_single_item, item): item for item in to_translate}
+    for future in as_completed(futures, timeout=60):
         try:
-            future.result(timeout=20)
+            future.result(timeout=15)
             translated_count += 1
         except Exception as e:
             logger.debug(f"翻译单条失败: {e}")
-    executor.shutdown(wait=False)
 
     if translated_count > 0:
         logger.info(f"✅ 并发翻译完成: {translated_count}/{len(to_translate)} 条新闻")

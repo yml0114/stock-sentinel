@@ -388,8 +388,22 @@ def _try_10jqka(url: str) -> dict:
             # 跳过纯数字行
             if s.isdigit() and len(s) < 20:
                 continue
-            # 跳过包含噪音关键词的行
-            if s in _10JQKA_NOISE:
+            # 跳过包含噪音关键词的行（增强：部分匹配+忽略大小写）
+            skip = False
+            for noise_kw in _10JQKA_NOISE:
+                if noise_kw in s or noise_kw.lower() in s.lower():
+                    skip = True
+                    break
+            if skip:
+                continue
+            # 跳过包含网址、域名的行
+            if re.search(r'https?://|www\.', s, re.IGNORECASE):
+                continue
+            # 跳过纯标点/特殊字符行
+            if re.match(r'^[=+\-|#*~><。·、，\-—_…\s]+$', s):
+                continue
+            # 跳过过长且无标点的行（通常是侧边栏列表）
+            if len(s) > 80 and not re.search(r'[，。！？；：,.:;!?]', s):
                 continue
             # 跳过股票代码列表格式: "代码 名称 涨跌幅"
             if re.match(r'^\d{6}\s+\S+\s+[\+\-]?\d+\.\d+%?$', s):
@@ -454,6 +468,85 @@ def _try_10jqka(url: str) -> dict:
         return {}
 
 
+# ── 财联社专用 ──
+
+def _try_cls(url: str) -> dict:
+    """财联社文章 — 通过detail API获取完整正文"""
+    # 从URL提取文章ID: https://www.cls.cn/detail/123456
+    m = re.search(r'detail[/\-](\d+)', url)
+    if not m:
+        # 尝试从 telegraph URL 提取
+        m = re.search(r'telegraph[/\-](\d+)', url)
+    if not m:
+        return {}
+    
+    article_id = m.group(1)
+    
+    # 方法1: 财联社详情API
+    try:
+        api_url = f"https://www.cls.cn/nodeapi/detail?app=CailianpressWeb&os=web&sv=8.4.6&id={article_id}"
+        req = urllib.request.Request(api_url, headers={
+            'User-Agent': _UA,
+            'Referer': f'https://www.cls.cn/detail/{article_id}',
+        })
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read())
+        article_data = data.get('data', {})
+        
+        # 可能在不同的嵌套层级
+        if isinstance(article_data, dict):
+            content_html = article_data.get('content', '') or article_data.get('brief', '')
+            title = article_data.get('title', '') or article_data.get('subject', '')
+        else:
+            content_html = ''
+            title = ''
+        
+        if content_html:
+            # 去HTML标签
+            text = re.sub(r'<[^>]+>', '\n', content_html)
+            text = _clean_text(text)
+            if len(text) > 100:
+                return {'title': _clean_title(title), 'text': text, 'length': len(text)}
+    except Exception as e:
+        logger.debug(f"财联社API失败: {e}")
+    
+    # 方法2: telegraph API（快讯长文）
+    try:
+        api_url = f"https://www.cls.cn/nodeapi/telegraphDetail?app=CailianpressWeb&os=web&sv=8.4.6&id={article_id}"
+        req = urllib.request.Request(api_url, headers={
+            'User-Agent': _UA,
+            'Referer': f'https://www.cls.cn/detail/{article_id}',
+        })
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read())
+        article_data = data.get('data', {})
+        
+        if isinstance(article_data, dict):
+            content_html = article_data.get('content', '') or article_data.get('brief', '')
+            title = article_data.get('title', '') or article_data.get('subject', '')
+            
+            if content_html:
+                text = re.sub(r'<[^>]+>', '\n', content_html)
+                text = _clean_text(text)
+                if len(text) > 50:
+                    return {'title': _clean_title(title), 'text': text, 'length': len(text)}
+    except Exception as e:
+        logger.debug(f"财联社telegraph API失败: {e}")
+    
+    # 方法3: 直接抓取+trafilatura
+    try:
+        downloaded = trafilatura.fetch_url(url)
+        if downloaded:
+            text = trafilatura.extract(downloaded, include_comments=False, output_format='txt', favor_recall=True)
+            if text and len(text) > 100:
+                title = text.split('\n')[0].strip() if '\n' in text else ''
+                return {'title': title, 'text': text, 'length': len(text)}
+    except Exception as e:
+        logger.debug(f"财联社trafilatura失败: {e}")
+    
+    return {}
+
+
 # ── 财新专用 ──
 
 def _try_caixin(url: str) -> dict:
@@ -502,6 +595,9 @@ def extract_article(url: str) -> dict:
 
     if '10jqka.com.cn' in url or '10jqka' in url or 'ths.com' in url:
         strategies.append(('10jqka', _try_10jqka))
+
+    if 'cls.cn' in url:
+        strategies.append(('财联社', _try_cls))
 
     # 通用策略：trafilatura 优先
     strategies.append(('trafilatura', _try_trafilatura))

@@ -819,7 +819,7 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
   }
 
   Widget _sectionTitle(String title) {
-    return Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold));
+    return Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white));
   }
 
   Widget _buildCommentCard() {

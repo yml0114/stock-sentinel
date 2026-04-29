@@ -486,49 +486,83 @@ RSS_SOURCES = [
     ('财新', 'https://rsshub.rssforever.com/caixin/latest'),
 ]
 
+# RSS不可达源黑名单（运行时自动维护，避免重复等待超时）
+_rss_blacklist: set = set()
+_RSS_BLACKLIST_TTL = 300  # 5分钟后重试
+_rss_blacklist_time: dict = {}
+
 
 def fetch_rss_news() -> list[dict]:
-    """从国际RSS源抓取新闻"""
+    """从国际RSS源并发抓取（并行 + 黑名单自动降级）"""
     results = []
-    for name, url in RSS_SOURCES:
+    now = __import__('time').time()
+    
+    # 清理过期黑名单
+    expired = [k for k, t in _rss_blacklist_time.items() if now - t > _RSS_BLACKLIST_TTL]
+    for k in expired:
+        _rss_blacklist.discard(k)
+        _rss_blacklist_time.pop(k, None)
+    
+    # 过滤黑名单源
+    active_sources = [(name, url) for name, url in RSS_SOURCES if name not in _rss_blacklist]
+    if not active_sources:
+        logger.debug("所有RSS源均在黑名单中，跳过")
+        return []
+    
+    def _fetch_single_rss(name_url):
+        name, url = name_url
+        items = []
         try:
             req = urllib.request.Request(url, headers={
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
             })
-            resp = urllib.request.urlopen(req, timeout=8)
+            resp = urllib.request.urlopen(req, timeout=5)  # 降低到5秒
             data = resp.read().decode('utf-8', errors='ignore')
-
-            # 解析RSS XML
-            items = re.findall(r'<item>(.*?)</item>', data, re.DOTALL)
-            for item in items[:15]:  # 每源最多15条
+            
+            rss_items = re.findall(r'<item>(.*?)</item>', data, re.DOTALL)
+            for item in rss_items[:15]:
                 title_m = re.search(r'<title><!\[CDATA\[(.+?)\]\]></title>|<title>([^<]+)</title>', item)
                 desc_m = re.search(r'<description><!\[CDATA\[(.+?)\]\]></description>|<description>([^<]+)</description>', item, re.DOTALL)
                 link_m = re.search(r'<link>([^<]+)</link>', item)
                 date_m = re.search(r'<pubDate>([^<]+)</pubDate>', item)
-
+                
                 title = ''
                 if title_m:
                     title = (title_m.group(1) or title_m.group(2) or '').strip()
-
-                # 过滤掉分类标题等无用项
+                
                 if not title or len(title) < 10 or title in ('Top Stories', 'US Top News and Analysis'):
                     continue
-
+                
                 desc = ''
                 if desc_m:
                     desc = re.sub(r'<[^>]+>', '', (desc_m.group(1) or desc_m.group(2) or '')).strip()
-
-                results.append({
+                
+                items.append({
                     'source': name,
                     'source_type': 'international',
                     'title': title,
-                    'content': desc,  # 保留完整描述，不做截断
+                    'content': desc,
                     'time': (date_m.group(1) if date_m else ''),
                     'url': (link_m.group(1) if link_m else ''),
                 })
         except Exception as e:
-            logger.warning(f"RSS源 {name} 获取失败: {e}")
-
+            # 加入黑名单
+            _rss_blacklist.add(name)
+            _rss_blacklist_time[name] = now
+            logger.warning(f"RSS源 {name} 获取失败(已加入黑名单): {e}")
+        return (name, items)
+    
+    # 并发抓取所有RSS源
+    with ThreadPoolExecutor(max_workers=len(active_sources)) as pool:
+        futures = {pool.submit(_fetch_single_rss, src): src[0] for src in active_sources}
+        for future in as_completed(futures, timeout=12):  # 总超时12秒
+            try:
+                name, items = future.result(timeout=6)
+                results.extend(items)
+                logger.debug(f"  RSS {name}: {len(items)}条")
+            except Exception:
+                pass
+    
     return results
 
 

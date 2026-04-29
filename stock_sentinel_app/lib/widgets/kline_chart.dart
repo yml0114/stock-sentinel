@@ -1,8 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 
-/// 专业K线图组件 — 蜡烛图 + 成交量 + MA均线 + 手势缩放 + 十字光标
-/// v2: 三指分离 — 单指拖拽 / 双指缩放 / 长按十字光标
+/// 专业K线图组件 v2 — 单指拖动十字光标 + 双指缩放 + 按钮缩放
 class ProfessionalKlineChart extends StatefulWidget {
   final List<Map<String, dynamic>> data;
   final String currencySymbol;
@@ -19,16 +18,11 @@ class ProfessionalKlineChart extends StatefulWidget {
 
 class _ProfessionalKlineChartState extends State<ProfessionalKlineChart> {
   double _scale = 1.0;
-  double _offset = 0;       // 水平偏移量（像素）
+  double _offset = 0;
   int? _crosshairIndex;
   Offset? _crosshairPos;
-  double _gestureStartScale = 1.0;
-  double _gestureStartOffset = 0;
-  
-  // 手势模式区分
-  bool _isScaling = false;      // 正在双指缩放
-  bool _isDragging = false;     // 正在单指拖拽
-  bool _isLongPress = false;    // 正在长按（十字光标）
+  double _baseScale = 1.0;
+  bool _isDragging = false;
 
   @override
   Widget build(BuildContext context) {
@@ -50,76 +44,57 @@ class _ProfessionalKlineChartState extends State<ProfessionalKlineChart> {
           height: 300,
           child: ClipRect(
             child: GestureDetector(
-              // ━━ 手势处理 ━━
-              
-              // 长按：十字光标（独立手势）
-              onLongPressStart: (details) {
-                _isLongPress = true;
+              // ━━ 单指拖动 = 十字光标跟随 ━━
+              onHorizontalDragStart: (details) {
+                _isDragging = true;
                 _updateCrosshair(details.localPosition);
                 setState(() {});
               },
-              onLongPressMoveUpdate: (details) {
-                if (_isLongPress) {
+              onHorizontalDragUpdate: (details) {
+                if (_isDragging) {
                   _updateCrosshair(details.localPosition);
                   setState(() {});
                 }
               },
-              onLongPressEnd: (details) {
-                _isLongPress = false;
-                setState(() {
-                  _crosshairIndex = null;
-                  _crosshairPos = null;
-                });
-              },
-              
-              // Scale手势：单指拖拽 + 双指缩放
-              onScaleStart: (details) {
-                _gestureStartScale = _scale;
-                _gestureStartOffset = _offset;
-                if (details.pointerCount == 1) {
-                  _isDragging = true;
-                  _isScaling = false;
-                } else {
-                  _isScaling = true;
-                  _isDragging = false;
-                  // 双指开始时清除十字光标
-                  _crosshairIndex = null;
-                  _crosshairPos = null;
-                }
-              },
-              onScaleUpdate: (details) {
-                setState(() {
-                  if (details.pointerCount >= 2) {
-                    // ━━ 双指：纯缩放 ━━
-                    _isScaling = true;
-                    _isDragging = false;
-                    final newScale = (_gestureStartScale * details.scale).clamp(0.5, 5.0);
-                    
-                    // 以焦点为中心缩放：调整offset保持焦点位置不变
-                    // focalPointDelta只用于位置追踪，不叠加到offset
-                    _scale = newScale;
-                    // 双指平移也支持（微调位置）
-                    _offset = _gestureStartOffset + details.focalPointDelta.dx * 0.3;
-                  } else if (!_isScaling) {
-                    // ━━ 单指：纯拖拽 ━━
-                    _isDragging = true;
-                    _offset += details.focalPointDelta.dx;
+              onHorizontalDragEnd: (_) {
+                _isDragging = false;
+                Future.delayed(const Duration(milliseconds: 800), () {
+                  if (!_isDragging && mounted) {
+                    setState(() {
+                      _crosshairIndex = null;
+                      _crosshairPos = null;
+                    });
                   }
                 });
               },
-              onScaleEnd: (details) {
-                _isScaling = false;
+              // ━━ 长按十字光标 ━━
+              onLongPressStart: (details) {
+                _isDragging = true;
+                _updateCrosshair(details.localPosition);
+                setState(() {});
+              },
+              onLongPressMoveUpdate: (details) {
+                _updateCrosshair(details.localPosition);
+                setState(() {});
+              },
+              onLongPressEnd: (_) {
                 _isDragging = false;
-                // 如果不是长按状态，清除十字光标
-                if (!_isLongPress) {
+                setState(() {
+                  _crosshairIndex = null;
+                  _crosshairPos = null;
+                });
+              },
+              // ━━ 双指缩放 ━━
+              onScaleStart: (details) {
+                _baseScale = _scale;
+              },
+              onScaleUpdate: (details) {
+                if (details.pointerCount >= 2) {
                   setState(() {
-                    _crosshairIndex = null;
-                    _crosshairPos = null;
+                    _scale = (_baseScale * details.scale).clamp(0.5, 5.0);
                   });
                 }
               },
-              
-              // 绘制层
               child: CustomPaint(
                 size: const Size(double.infinity, 300),
                 painter: _KlinePainter(

@@ -43,7 +43,7 @@ class _EventCardState extends State<EventCard> {
               // 严重程度 + 类型
               Row(
                 children: [
-                  Text(widget.event.severityEmoji, style: const TextStyle(fontSize: 20)),
+                  _severityIcon(20),
                   const SizedBox(width: 8),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -139,6 +139,18 @@ class _EventCardState extends State<EventCard> {
     }
   }
 
+  /// 用 Flutter Icon 替代 emoji，避免乱码方块
+  Widget _severityIcon(double size) {
+    switch (widget.event.severity) {
+      case 'high':
+        return Icon(Icons.error_rounded, size: size, color: Colors.red);
+      case 'medium':
+        return Icon(Icons.warning_amber_rounded, size: size, color: Colors.orange);
+      default:
+        return Icon(Icons.info_rounded, size: size, color: Colors.blue);
+    }
+  }
+
   String _formatTime(DateTime? time) {
     if (time == null) return '';
     final diff = DateTime.now().difference(time);
@@ -168,7 +180,7 @@ class _EventCardState extends State<EventCard> {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(widget.event.severityEmoji, style: const TextStyle(fontSize: 16)),
+                  _severityIcon(16),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
