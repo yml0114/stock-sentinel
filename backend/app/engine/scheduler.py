@@ -91,11 +91,15 @@ def poll_realtime():
         # 5. 处理每个事件：AI分析 → 存库 → 推送
         for event in events:
             try:
-                # AI 分析
-                ai_result = analyze_event(event, event.get("quote"))
+                # AI 分析（失败不阻塞，降级为"AI暂无分析"）
+                ai_result = "AI暂无分析"
+                try:
+                    ai_result = analyze_event(event, event.get("quote"))
+                except Exception as ai_err:
+                    logger.warning(f"AI分析失败（事件仍会保存）: {ai_err}")
                 event["ai_analysis"] = ai_result
 
-                # 存入数据库
+                # 存入数据库（始终保存，无论AI是否成功）
                 _run_async(add_event(
                     stock_code=event["stock_code"],
                     event_type=event["event_type"],

@@ -38,7 +38,6 @@ async def push_ntfy(title: str, body: str, severity: str = "info"):
     # Use JSON body to avoid latin-1 header encoding errors with emoji
     import json
     payload = {
-        "topic": config.NTFY_TOPIC,
         "title": full_title,
         "message": body,
         "priority": headers["Priority"],
@@ -48,7 +47,7 @@ async def push_ntfy(title: str, body: str, severity: str = "info"):
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
-                config.NTFY_SERVER,
+                url,
                 content=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                 headers={"Content-Type": "application/json; charset=utf-8"},
             )

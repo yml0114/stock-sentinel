@@ -228,11 +228,11 @@ class _NewsScreenState extends State<NewsScreen> {
               Text(
                 content,
                 style: TextStyle(
-                  fontSize: 13,
-                  color: Colors.white.withOpacity(0.45),
-                  height: 1.5,
+                  fontSize: 14,
+                  color: Colors.white.withOpacity(0.55),
+                  height: 1.55,
                 ),
-                maxLines: 2,
+                maxLines: 3,
                 overflow: TextOverflow.ellipsis,
               ),
             ],

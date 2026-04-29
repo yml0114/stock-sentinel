@@ -267,6 +267,193 @@ def _try_direct_html(url: str) -> dict:
         return {}
 
 
+# ── 10jqka (同花顺) 专用 ──
+
+# 10jqka 页面噪音关键词
+_10JQKA_NOISE = {
+    '操盘必读', '个股行情', '个股资金流', '个股研报', '个股公告',
+    '股吧', '讨论区', '加入自选', '模拟炒股', '智能诊股',
+    '诊股', '诊股助手', '诊股宝', '诊股器', '诊股王',
+    '诊股通', '诊股网', '诊股大师', '诊股机器人', '诊股神器',
+    '诊股分析', '诊股报告', '诊股结果', '诊股评级',
+    '千股千评', '千股千评', '个股点评', '个股诊断',
+    '短线', '中线', '长线', '买入', '卖出', '增持', '减持',
+    '主力', '游资', '散户', '机构', '北向资金',
+    '热点题材', '题材', '龙头', '涨停', '跌停',
+    '换手率', '市盈率', '市净率', '成交量', '成交额',
+    '五档盘口', '逐笔交易', '分时图', 'K线', '均线',
+    'MACD', 'KDJ', 'RSI', 'BOLL', '布林线',
+    '新闻', '公告', '研报', '龙虎榜', '大宗交易',
+    '分红', '送股', '转增', '配股', '增发', '回购',
+    '行业新闻', '行业研报', '行业分析', '行业报告',
+    '股票代码', '股票名称', '涨跌幅', '涨跌额', '最新价',
+    '开盘价', '收盘价', '最高价', '最低价',
+    '成交量', '成交额', '换手率', '市盈率', '市净率',
+    '总市值', '流通市值', '振幅', '量比', '委比',
+    '市盈率(TTM)', '市盈率(静)', '市盈率(动)',
+    '新浪财经', '东方财富', '同花顺', '雪球', '牛股网',
+    '金投网', '财富赢家', '中金在线', '第一财经', '证券之星',
+    '点击查看详情', '点击查看', '更多>>', '>>更多',
+    '相关股票', '相关概念', '相关板块', '相关基金',
+    '本文来源', '责任编辑', '文章作者', '作者:',
+    '免责声明', '风险提示', '投资有风险', '入市需谨慎',
+}
+
+# 10jqka 股票代码行模式: 纯数字+空格+数字+空格+数字
+_10JQKA_STOCK_CODE_PATTERN = re.compile(
+    r'^[\d\s\.\+\-%]{10,}$'  # 纯数字/空格/百分号行
+)
+
+
+def _clean_10jqka_html(html: str) -> str:
+    """预清理10jqka的HTML，移除导航、广告、股票代码列表等噪音元素"""
+    # 移除script和style标签及其内容
+    html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    # 移除nav/header/footer标签
+    html = re.sub(r'<nav[^>]*>.*?</nav>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    html = re.sub(r'<header[^>]*>.*?</header>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    html = re.sub(r'<footer[^>]*>.*?</footer>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    # 移除 class/id 含导航、广告、股票列表关键词的 div/section
+    noise_class_ids = [
+        'nav', 'header', 'footer', 'sidebar', 'aside', 'recommend',
+        'related', 'comment', 'ad-', 'ads-', 'banner', 'toolbar',
+        'breadcrumb', 'breadcrumb', 'stockquote', 'stockbar',
+        'hqcode', 'hqtable', 'codelist', 'stocklist', 'stockinfo-side',
+        'article-recommend', 'article-related', 'article-ad',
+        'you_like', 'guess_like', 'hot_list', 'hot_list_',
+        'news_list', 'news_list_', 'newsList',
+    ]
+    for pattern_str in noise_class_ids:
+        # 移除包含这些关键词的 div/section/aside 标签
+        regex = re.compile(
+            r'<(?:div|section|aside)[^>]*(?:class|id)="[^"]*' + re.escape(pattern_str) + r'[^"]*"[^>]*>.*?</(?:div|section|aside)>',
+            re.DOTALL | re.IGNORECASE
+        )
+        html = regex.sub('', html)
+    # 移除iframe
+    html = re.sub(r'<iframe[^>]*>.*?</iframe>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    return html
+
+
+def _try_10jqka(url: str) -> dict:
+    """同花顺(10jqka)文章 — 专用抓取+噪音清理"""
+    try:
+        req = urllib.request.Request(url, headers=_HEADERS)
+        resp = urllib.request.urlopen(req, timeout=12)
+        html = resp.read().decode('utf-8', errors='ignore')
+        if not html or len(html) < 500:
+            return {}
+
+        # 预清理HTML噪音
+        html = _clean_10jqka_html(html)
+
+        # 用 trafilatura 提取正文（设置只提取文章内容）
+        text = trafilatura.extract(
+            html,
+            include_comments=False,
+            include_tables=False,
+            output_format='txt',
+            favor_recall=False,  # 10jqka HTML很乱，用保守模式减少噪音
+        )
+        if not text or len(text) < 50:
+            # 降级：favor_recall=True
+            text = trafilatura.extract(
+                html,
+                include_comments=False,
+                include_tables=False,
+                output_format='txt',
+                favor_recall=True,
+            )
+        if not text or len(text) < 50:
+            return {}
+
+        # 逐行清理噪音
+        lines = text.split('\n')
+        cleaned_lines = []
+        seen_stock_codes = set()
+
+        for line in lines:
+            s = line.strip()
+            if not s:
+                if cleaned_lines and cleaned_lines[-1].strip():
+                    cleaned_lines.append('')
+                continue
+            # 跳过过短的行（通常不是正文）
+            if len(s) < 4:
+                continue
+            # 跳过纯股票代码/数据行
+            if _10JQKA_STOCK_CODE_PATTERN.match(s):
+                continue
+            # 跳过纯数字行
+            if s.isdigit() and len(s) < 20:
+                continue
+            # 跳过包含噪音关键词的行
+            if s in _10JQKA_NOISE:
+                continue
+            # 跳过股票代码列表格式: "代码 名称 涨跌幅"
+            if re.match(r'^\d{6}\s+\S+\s+[\+\-]?\d+\.\d+%?$', s):
+                continue
+            # 跳过纯股票代码行
+            if re.match(r'^\d{6}$', s):
+                seen_stock_codes.add(s)
+                continue
+            cleaned_lines.append(line)
+
+        text = '\n'.join(cleaned_lines).strip()
+
+        # 进一步清理：去掉连续出现的股票代码块（3+个连续6位数字）
+        text = re.sub(
+            r'(?:\d{6}\s*){3,}', '\n', text
+        )
+
+        # 截断尾部噪音（同花顺常见尾部：推荐阅读、股票列表等）
+        stop_markers = [
+            '推荐阅读', '相关阅读', '延伸阅读', '猜你喜欢',
+            '热门推荐', '本文来源', '责任编辑', '免责',
+            '风险提示', '投资有风险', '分享到', '发表评论',
+            '我要纠错', '加入自选', '诊股', '个股行情',
+            '您可能感兴趣', '看了又看', '最新文章', '热门文章',
+            '文章来源', '本文不代表', '责任编辑',
+        ]
+        result_lines = []
+        # 找正文开始（第一条超过30字的行）
+        body_start = 0
+        for i, line in enumerate(cleaned_lines):
+            if len(line.strip()) > 30:
+                body_start = i
+                break
+        for line in cleaned_lines[body_start:]:
+            s = line.strip()
+            if any(marker in s for marker in stop_markers):
+                break
+            result_lines.append(line)
+        text = '\n'.join(result_lines).strip()
+
+        if len(text) < 50:
+            return {}
+
+        # 提取标题
+        title = ''
+        # 尝试从HTML中提取title标签
+        title_m = re.search(r'<title[^>]*>(.*?)</title>', html, re.DOTALL | re.IGNORECASE)
+        if title_m:
+            title = re.sub(r'<[^>]+>', '', title_m.group(1)).strip()
+            # 清理标题后缀
+            for suffix in ['_股票频道_同花顺', '_同花顺', '-同花顺财经', '_同花顺财经',
+                           '-10jqka.com.cn', '_10jqka', '_同花顺股票频道']:
+                title = title.replace(suffix, '')
+
+        if not title:
+            title = text.split('\n')[0].strip()[:80]
+
+        return {'title': title, 'text': text, 'length': len(text)}
+
+    except Exception as e:
+        logger.debug(f"10jqka抓取失败: {e}")
+        return {}
+
+
 # ── 财新专用 ──
 
 def _try_caixin(url: str) -> dict:
@@ -312,6 +499,9 @@ def extract_article(url: str) -> dict:
 
     if 'caixin.com' in url:
         strategies.append(('财新', _try_caixin))
+
+    if '10jqka.com.cn' in url or '10jqka' in url or 'ths.com' in url:
+        strategies.append(('10jqka', _try_10jqka))
 
     # 通用策略：trafilatura 优先
     strategies.append(('trafilatura', _try_trafilatura))

@@ -170,12 +170,20 @@ def fetch_cls(limit: int = 30) -> list:
             title = item.get('title', '').strip()
             content = _strip_html(item.get('content', ''))
             
+            # 有些快讯 title 为空，content 本身就是全文
+            if not title and content:
+                title = content[:60] + ('...' if len(content) > 60 else '')
+            
             ts = item.get('ctime', 0)
             time_str = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M') if ts else ''
             
-            # 详情URL
-            brief_id = item.get('brief_id', '')
-            article_url = f"https://www.cls.cn/detail/{brief_id}" if brief_id else ''
+            # 详情URL — 优先用shareurl，其次拼接id
+            share_url = item.get('shareurl', '')
+            if share_url:
+                article_url = share_url
+            else:
+                item_id = item.get('id', '')
+                article_url = f"https://www.cls.cn/detail/{item_id}" if item_id else ''
 
             # 检测国际源引用
             source_type = 'domestic'

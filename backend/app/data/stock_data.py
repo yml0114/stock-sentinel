@@ -442,105 +442,74 @@ def get_kline_data(stock_code: str, period: str = "daily", days: int = 120, mark
         return _get_a_kline(stock_code, period, days)
 
 
+def _to_eastmoney_secid(stock_code: str, market: str) -> str:
+    """将股票代码转换为东方财富 secid 格式"""
+    if market == "A":
+        # 6开头=上交所(1)，其余=深交所(0)
+        prefix = "1" if stock_code.startswith("6") else "0"
+        return f"{prefix}.{stock_code}"
+    elif market == "HK":
+        return f"116.{stock_code}"
+    elif market == "US":
+        return f"105.{stock_code}"
+    return f"1.{stock_code}"
+
+
+_EASTMONEY_TRENDS_URL = "https://push2.eastmoney.com/api/qt/stock/trends2/get"
+
+
 def get_intraday_trend(stock_code: str, market: str = "") -> dict:
     """
-    获取今日分时趋势 + 实时行情
+    获取今日分时趋势 + 实时行情（东方财富统一接口，覆盖A股/港股/美股）
     返回: {trend: [{time, price, volume, avg_price}], realtime: {...}}
-    趋势数据: 5分钟K线（约48根覆盖一天交易时间）
     """
     m = market or detect_market(stock_code)
-    sina_code = _code_to_sina(stock_code, m)
+    secid = _to_eastmoney_secid(stock_code, m)
 
-    # ── 1. 获取今日分时K线 ──
+    # ── 1. 获取分时数据（东方财富 trends2）──
     trend = []
-    today_str = datetime.now().strftime("%Y-%m-%d")
-
-    if m == "A":
-        try:
-            resp = requests.get(_SINA_KLINE_URL, params={
-                "symbol": sina_code, "scale": "5", "ma": "no", "datalen": "48",
-            }, headers=_SINA_HEADERS, timeout=10)
-            data = json.loads(resp.text)
-            if data:
-                cum_amount = 0.0
-                cum_volume = 0.0
-                for item in data:
-                    day_str = item.get("day", "")
-                    # 只保留今日数据
-                    if today_str not in day_str:
-                        continue
-                    close = float(item.get("close", 0))
-                    volume = float(item.get("volume", 0))
+    pre_close = 0.0
+    try:
+        resp = requests.get(_EASTMONEY_TRENDS_URL, params={
+            "secid": secid,
+            "fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+            "iscr": "0",
+            "ndays": "1",
+        }, headers=_HEADERS, timeout=10)
+        data = resp.json()
+        trends_data = data.get("data", {})
+        if trends_data:
+            pre_close = float(trends_data.get("preClose", 0) or 0)
+            lines = trends_data.get("trends", [])
+            # 格式: time,open,close,high,low,volume,amount,avg_price
+            cum_amount = 0.0
+            cum_volume = 0.0
+            for line in lines:
+                parts = line.split(",")
+                if len(parts) < 7:
+                    continue
+                time_str = parts[0]
+                close = float(parts[2])
+                volume = float(parts[5])
+                avg_price = float(parts[7]) if len(parts) > 7 and parts[7] else 0
+                # 如果东方财富没给avg，自己算
+                if avg_price <= 0:
                     cum_volume += volume
                     cum_amount += close * volume
                     avg_price = round(cum_amount / cum_volume, 2) if cum_volume > 0 else 0
-                    trend.append({
-                        "time": day_str,
-                        "price": close,
-                        "volume": volume,
-                        "avg_price": avg_price,
-                    })
-        except Exception as e:
-            logger.error(f"获取A股分时数据失败 {stock_code}: {e}")
-
-    elif m == "HK":
-        try:
-            resp = requests.get(_QQ_KLINE_URL, params={
-                "param": f"hk{stock_code},m5,,48,",
-            }, headers=_HEADERS, timeout=10)
-            data = resp.json()
-            klines = (data.get("data", {}).get(f"hk{stock_code}", {})
-                      .get("m5", data.get("data", {}).get(f"hk{stock_code}", {}).get("qt", {})))
-            if isinstance(klines, list) and klines:
-                cum_amount = 0.0
-                cum_volume = 0.0
-                for item in klines:
-                    # 腾讯格式: [时间, 开盘, 收盘, 最高, 最低, 成交量]
-                    if len(item) < 6:
-                        continue
-                    day_str = item[0]
-                    close = float(item[2])
-                    volume = float(item[5]) if item[5] else 0
-                    cum_volume += volume
-                    cum_amount += close * volume
-                    avg_price = round(cum_amount / cum_volume, 3) if cum_volume > 0 else 0
-                    trend.append({
-                        "time": day_str,
-                        "price": close,
-                        "volume": volume,
-                        "avg_price": avg_price,
-                    })
-        except Exception as e:
-            logger.error(f"获取港股分时数据失败 {stock_code}: {e}")
-
-    elif m == "US":
-        try:
-            resp = requests.get(_SINA_US_KLINE_URL, params={
-                "symbol": stock_code, "datalen": "48",
-            }, headers=_SINA_HEADERS, timeout=10)
-            data = json.loads(resp.text)
-            if data:
-                cum_amount = 0.0
-                cum_volume = 0.0
-                for item in data:
-                    day_str = item.get("d", "")
-                    close = float(item.get("c", 0))
-                    volume = float(item.get("v", 0))
-                    cum_volume += volume
-                    cum_amount += close * volume
-                    avg_price = round(cum_amount / cum_volume, 4) if cum_volume > 0 else 0
-                    trend.append({
-                        "time": day_str,
-                        "price": close,
-                        "volume": volume,
-                        "avg_price": avg_price,
-                    })
-        except Exception as e:
-            logger.error(f"获取美股分时数据失败 {stock_code}: {e}")
+                trend.append({
+                    "time": time_str,
+                    "price": close,
+                    "volume": volume,
+                    "avg_price": avg_price,
+                })
+    except Exception as e:
+        logger.error(f"获取分时数据失败 {stock_code} ({m}): {e}")
 
     # ── 2. 获取实时行情 ──
     quote = get_realtime_quote(stock_code, market=m)
-    prev_close = quote.get("prev_close", 0)
+    prev_close = quote.get("prev_close", 0) or pre_close
     price = quote.get("price", 0)
     change_amt = price - prev_close if prev_close > 0 else 0
     change_pct = (change_amt / prev_close * 100) if prev_close > 0 else 0

@@ -371,30 +371,7 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
               ),
           ],
         ),
-        actions: [
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            onSelected: (v) {
-              final parts = v.split('_');
-              _switchPeriod(parts[0], int.parse(parts[1]), parts[2]);
-            },
-            itemBuilder: (_) => [
-              const PopupMenuItem(value: '1m_1_1分', child: Text('1分钟线')),
-              const PopupMenuItem(value: '5m_2_5分', child: Text('5分钟线')),
-              const PopupMenuItem(value: '15m_3_15分', child: Text('15分钟线')),
-              const PopupMenuItem(value: '30m_4_30分', child: Text('30分钟线')),
-              const PopupMenuItem(value: '60m_5_60分', child: Text('60分钟线')),
-              const PopupMenuDivider(),
-              const PopupMenuItem(value: 'daily_60_日K', child: Text('日K · 60天')),
-              const PopupMenuItem(value: 'daily_120_日K', child: Text('日K · 120天')),
-              const PopupMenuItem(value: 'daily_250_日K', child: Text('日K · 一年')),
-              const PopupMenuDivider(),
-              const PopupMenuItem(value: 'weekly_365_周K', child: Text('周K · 一年')),
-              const PopupMenuItem(value: 'weekly_730_周K', child: Text('周K · 两年')),
-              const PopupMenuItem(value: 'monthly_1000_月K', child: Text('月K · 全部')),
-            ],
-          ),
-        ],
+        actions: [],
       ),
       body: RefreshIndicator(
         onRefresh: _loadAll,

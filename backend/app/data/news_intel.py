@@ -102,17 +102,84 @@ SOURCE_PRIORITY = {
 
 
 class NewsDeduplicator:
-    """智能去重 — 标题相似度 + 内容指纹 + 源优先级（彭博/财新优先保留）"""
+    """智能去重 — 标题相似度 + 内容指纹 + 源优先级（彭博/财新优先保留）
 
-    def __init__(self, similarity_threshold: float = 0.65):
+    改进策略：
+    - 多层相似度检测：SequenceMatcher + 最长公共子串比率 + 字符集交集
+    - 同一来源更严格的去重阈值
+    - 更好的标题清洗：去除来源前缀、常见填充词
+    """
+
+    def __init__(self, similarity_threshold: float = 0.60):
         self._seen_hashes: dict = {}         # 精确哈希 → source_name
-        self._seen_titles: list = []         # (title_clean, source_name)
+        self._seen_titles: list = []         # (title_clean, source_name, time_str)
         self._threshold = similarity_threshold
+        # 同源去重使用更低阈值（同一来源的标题更可能重复）
+        self._same_source_threshold = 0.45
 
     def _get_priority(self, source: str) -> int:
         return SOURCE_PRIORITY.get(source, 9)
 
-    def is_duplicate(self, title: str, content: str = "", source: str = "") -> bool:
+    def _lcs_ratio(self, s1: str, s2: str) -> float:
+        """最长公共子串比率（比SequenceMatcher更适合检测部分重叠的标题）"""
+        if not s1 or not s2:
+            return 0.0
+        # 优化：如果长度差异太大，直接跳过
+        if len(s1) > len(s2) * 3 or len(s2) > len(s1) * 3:
+            return 0.0
+        m, n = len(s1), len(s2)
+        # 滚动数组优化
+        prev = [0] * (n + 1)
+        max_len = 0
+        for i in range(1, m + 1):
+            curr = [0] * (n + 1)
+            for j in range(1, n + 1):
+                if s1[i-1] == s2[j-1]:
+                    curr[j] = prev[j-1] + 1
+                    max_len = max(max_len, curr[j])
+            prev = curr
+        return max_len * 2 / (m + n) if (m + n) > 0 else 0.0
+
+    def _char_set_ratio(self, s1: str, s2: str) -> float:
+        """字符集交集比率（快速判断两个标题是否谈论同一件事）"""
+        if not s1 or not s2:
+            return 0.0
+        set1 = set(s1.replace(' ', ''))
+        set2 = set(s2.replace(' ', ''))
+        if not set1 or not set2:
+            return 0.0
+        intersection = len(set1 & set2)
+        return intersection * 2 / (len(set1) + len(set2))
+
+    def _is_similar(self, t1: str, t2: str, same_source: bool = False) -> bool:
+        """综合判断两个标题是否相似（多策略融合）"""
+        threshold = self._same_source_threshold if same_source else self._threshold
+
+        # 策略1: SequenceMatcher（经典编辑距离相似度）
+        seq_ratio = SequenceMatcher(None, t1, t2).ratio()
+        if seq_ratio >= threshold:
+            return True
+
+        # 策略2: 最长公共子串比率（适合检测"XX宣布YY" vs "XX：YY"这类变体）
+        lcs_ratio = self._lcs_ratio(t1, t2)
+        # LCS阈值比SequenceMatcher略高（LCS更容易产生假阳性）
+        lcs_threshold = threshold + 0.10
+        if lcs_ratio >= lcs_threshold:
+            return True
+
+        # 策略3: 字符集交集（快速检测"同一件事"，最宽松）
+        # 只有当标题较长时才使用（短标题字符集太小，容易误判）
+        if len(t1) > 10 and len(t2) > 10:
+            char_ratio = self._char_set_ratio(t1, t2)
+            char_threshold = threshold + 0.15
+            if char_ratio >= char_threshold:
+                # 字符集匹配时，再验证SequenceMatcher至少达到较低阈值
+                if seq_ratio >= (threshold - 0.15):
+                    return True
+
+        return False
+
+    def is_duplicate(self, title: str, content: str = "", source: str = "", time: str = "") -> bool:
         """判断是否重复新闻，高优先级源可替换低优先级的重复条目"""
         if not title or len(title.strip()) < 5:
             return True
@@ -120,39 +187,61 @@ class NewsDeduplicator:
         my_priority = self._get_priority(source)
         title_clean = self._clean_title(title)
 
+        # 标题太短清洗后可能为空
+        if len(title_clean) < 3:
+            return True
+
         # 1. 精确哈希去重
         text_hash = hashlib.md5(title.strip().encode()).hexdigest()
         if text_hash in self._seen_hashes:
             existing_src = self._seen_hashes[text_hash]
-            # 高优先级源 → 替换记录
             if my_priority < self._get_priority(existing_src):
                 self._seen_hashes[text_hash] = source
             return True
 
         # 2. 标题相似度去重（同一件事不同媒体报道）
-        for i, (seen_title, seen_src) in enumerate(self._seen_titles):
-            ratio = SequenceMatcher(None, title_clean, seen_title).ratio()
-            if ratio >= self._threshold:
-                # 高优先级源 → 替换这条记录
+        for i, (seen_title, seen_src, _) in enumerate(self._seen_titles):
+            is_same_src = self._normalize_source(source) == self._normalize_source(seen_src)
+            if self._is_similar(title_clean, seen_title, same_source=is_same_src):
+                # 高优先级源 → 替换这条记录（保留更好的来源）
                 if my_priority < self._get_priority(seen_src):
-                    self._seen_titles[i] = (title_clean, source)
+                    self._seen_titles[i] = (title_clean, source, time)
                 return True
 
         # 3. 通过，记录
         self._seen_hashes[text_hash] = source
-        self._seen_titles.append((title_clean, source))
+        self._seen_titles.append((title_clean, source, time))
         # 保持列表大小（避免内存增长）
-        if len(self._seen_titles) > 2000:
-            self._seen_titles = self._seen_titles[-1000:]
-            self._seen_hashes = {k: v for k, v in list(self._seen_hashes.items())[-1000:]}
+        if len(self._seen_titles) > 3000:
+            self._seen_titles = self._seen_titles[-1500:]
+            self._seen_hashes = {k: v for k, v in list(self._seen_hashes.items())[-1500:]}
 
         return False
 
+    def _normalize_source(self, source: str) -> str:
+        """归一化来源名称（合并同一实体的不同名称）"""
+        source_map = {
+            '财联社API': '财联社',
+            'Bloomberg (via 华尔街见闻)': 'Bloomberg',
+            'CNBC (via 华尔街见闻)': 'CNBC',
+            'WSJ (via 华尔街见闻)': 'WSJ',
+            'FT (via 华尔街见闻)': 'Financial Times',
+            'Reuters (via 华尔街见闻)': 'Reuters',
+        }
+        return source_map.get(source, source)
+
     def _clean_title(self, title: str) -> str:
-        """清洗标题，去除噪音字符"""
-        # 去除来源标签、特殊符号
-        title = re.sub(r'[\[\]【】\(\)（）]', '', title)
+        """清洗标题，去除噪音字符和来源前缀"""
+        # 去除方括号标签及其内容（如"【财联社】""[快讯]"）
+        title = re.sub(r'[【\[（\(][A-Za-z\u4e00-\u9fff]{1,10}[】\]）\)]', '', title)
+        # 去除来源冒号前缀（如"财联社：""快讯："）
+        title = re.sub(r'^[A-Za-z\u4e00-\u9fff]{1,10}[：:\s]+', '', title)
+        # 去除特殊标点（保留中文和字母数字）
         title = re.sub(r'[^\w\s\u4e00-\u9fff]', '', title)
+        # 去除常见填充词
+        fillers = ['快讯', '突发', '重磅', '最新', '独家', '更新', '早报', '晚报', '午间']
+        for f in fillers:
+            title = title.replace(f, '')
         title = re.sub(r'\s+', ' ', title).strip()
         return title.lower()
 
@@ -292,16 +381,40 @@ def fetch_cctv_news() -> list[dict]:
 
 
 def fetch_caixin_news() -> list[dict]:
-    """财新新闻 — 深度财经"""
+    """财新新闻 — 深度财经
+    从 AKShare stock_news_main_cx() 获取，字段有: summary, url, tag
+    summary 通常包含完整摘要/引言，直接作为 content 使用
+    title 从 summary 前60字截取（接口无独立 title 字段）
+    """
     try:
         df = ak.stock_news_main_cx()
         results = []
         for _, row in df.iterrows():
+            summary = str(row.get('summary', '')).strip()
+            if not summary or len(summary) < 5:
+                continue
+            # 尝试从 summary 中分离标题（通常第一句是标题）
+            # 财新的 summary 格式: "标题。详细内容..." 或 "标题：详细内容..."
+            title = ''
+            content = summary
+            # 按句号、冒号分割，第一段作为标题
+            for sep in ['。', '：', ':', '；', '\n']:
+                if sep in summary:
+                    parts = summary.split(sep, 1)
+                    candidate = parts[0].strip()
+                    # 标题通常较短（<80字）
+                    if 5 < len(candidate) < 80:
+                        title = candidate
+                        content = summary
+                        break
+            if not title:
+                title = summary[:80].rstrip()
+            
             results.append({
                 'source': '财新',
                 'source_type': 'domestic',
-                'title': str(row.get('summary', ''))[:80],
-                'content': str(row.get('summary', '')),
+                'title': title,
+                'content': content,  # 完整 summary，不截断
                 'url': str(row.get('url', '')),
                 'tag': str(row.get('tag', '')),
             })
@@ -409,7 +522,7 @@ def fetch_rss_news() -> list[dict]:
                     'source': name,
                     'source_type': 'international',
                     'title': title,
-                    'content': desc[:500],
+                    'content': desc,  # 保留完整描述，不做截断
                     'time': (date_m.group(1) if date_m else ''),
                     'url': (link_m.group(1) if link_m else ''),
                 })
@@ -517,12 +630,10 @@ def fetch_all_news(stock_codes: list[str] = None) -> list[dict]:
     except Exception as e:
         logger.warning(f"  ★ 华尔街见闻+财联社API 失败: {e}")
 
-    # ━━ 翻译国际新闻为中文（Bloomberg + 其他英文RSS）━━
-    international = [x for x in all_news if x.get('source_type') == 'international']
-    if international:
-        translate_news_items(international)
+    # ━━ 翻译所有含英文的新闻（不限于国际源）━━
+    translate_news_items(all_news)
 
-    # ━━ 第三梯队：国内快讯源（并发抓取，总超时20秒）━━
+    # ━━ AKShare源并发（第三梯队，总超时20秒）━━
     ak_sources = [
         ("财联社", fetch_cls_news),
         ("东方财富", fetch_em_news),
@@ -556,7 +667,10 @@ def fetch_all_news(stock_codes: list[str] = None) -> list[dict]:
     # ━━ 智能去重 ━━
     deduped = []
     for item in all_news:
-        if not _dedup.is_duplicate(item.get('title', ''), item.get('content', ''), item.get('source', '')):
+        if not _dedup.is_duplicate(
+            item.get('title', ''), item.get('content', ''),
+            item.get('source', ''), item.get('time', '')
+        ):
             deduped.append(item)
 
     stats_before = len(all_news)
@@ -599,10 +713,8 @@ def fetch_all_raw(stock_codes: list[str] = None) -> list[dict]:
     except Exception:
         pass
 
-    # 翻译国际新闻为中文
-    international = [x for x in all_news if x.get('source_type') == 'international']
-    if international:
-        translate_news_items(international)
+    # 翻译所有含英文的新闻（不限于国际源）
+    translate_news_items(all_news)
 
     # AKShare源并发
     ak_fetchers = [
@@ -626,9 +738,20 @@ def fetch_all_raw(stock_codes: list[str] = None) -> list[dict]:
             except Exception:
                 pass
 
+    # ━━ 去重（raw也去重，避免前端显示重复条目）━━
+    raw_dedup = NewsDeduplicator(similarity_threshold=0.60)
+    deduped_raw = []
+    for item in all_news:
+        if not raw_dedup.is_duplicate(
+            item.get('title', ''), item.get('content', ''),
+            item.get('source', ''), item.get('time', '')
+        ):
+            deduped_raw.append(item)
+    logger.info(f"📰 原始新闻流: {len(all_news)}条 → 去重后{len(deduped_raw)}条")
+
     # 按时间倒序排列（最新在前），而不是按源排
-    all_news.sort(key=lambda x: x.get('time', ''), reverse=True)
-    return all_news
+    deduped_raw.sort(key=lambda x: x.get('time', ''), reverse=True)
+    return deduped_raw
 
 
 def format_for_ai(news_item: dict) -> str:

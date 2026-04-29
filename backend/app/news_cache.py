@@ -72,11 +72,10 @@ def _do_fetch_raw():
         logger.info("🔄 后台抓取新闻(原始)...")
         items = fetch_all_raw()
         if items:
-            # 确保英文标题已翻译（缓存中必须是中文）
+            # 确保所有英文标题已翻译（缓存中必须是中文）
             from app.data.translator import translate_news_items, _is_chinese
             untranslated = [i for i in items 
-                          if i.get('source_type') == 'international' 
-                          and i.get('title') 
+                          if i.get('title') 
                           and not _is_chinese(i['title'])]
             if untranslated:
                 logger.info(f"🔤 补充翻译 {len(untranslated)} 条未翻译标题...")
