@@ -74,6 +74,9 @@ _STOP_MARKERS = [
     'already a subscriber', 'download the app',
 ]
 
+# 去重用标点集（用 set 比 re 替换快）
+_PUNCT = set('，。、；：""\u2018\u2019\u201c\u201d（）《》【】！？~·…——,.:;-!?()[]{}\"\' \t\r\n')
+
 
 def _clean_text(text: str) -> str:
     """通用文本清理：去噪音行 + 截断尾部"""
@@ -113,8 +116,9 @@ def _clean_text(text: str) -> str:
         if not s:
             deduped.append(line)
             continue
-        # 用前60字符做去重key（避免逐字比较太慢）
-        key = s[:60]
+        # 规范化：删空白+删标点 → 取前40字符做key
+        norm = ''.join(ch for ch in s if ch not in _PUNCT)
+        key = norm[:40]
         if key in seen:
             continue
         seen.add(key)
@@ -563,6 +567,52 @@ def _try_cls(url: str) -> dict:
     return {}
 
 
+# ── 新浪财经专用 ──
+
+def _try_sina_finance(url: str) -> dict:
+    """新浪财经 — 直接抓取 artibody 正文（国内可直连）"""
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': _UA, 'Referer': 'https://finance.sina.com.cn/'})
+        resp = urllib.request.urlopen(req, timeout=12)
+        html = resp.read().decode('utf-8', errors='ignore')
+        if not html:
+            return {}
+
+        # 提取标题
+        title = ''
+        title_m = re.search(r'<title>(.*?)</title>', html, re.S)
+        if title_m:
+            title = re.sub(r'<[^>]+>', '', title_m.group(1)).strip()
+            title = re.sub(r'[_\-—|]\s*(新浪财经|新浪网|新浪)\s*$', '', title).strip()
+
+        # 方法1: 直接从 artibody div 提取
+        artibody = re.search(r'<div[^>]*id=["\']artibody["\'].*?>(.*?)</div>\s*(?:<div[^>]*class|<script)', html, re.S)
+        if artibody:
+            text = re.sub(r'<[^>]+>', '\n', artibody.group(1))
+            text = _clean_text(text)
+            if len(text) > 100:
+                return {'title': title, 'text': text, 'length': len(text)}
+
+        # 方法2: 从 article body div 提取
+        article = re.search(r'<div[^>]*class=["\'][^"\']*article[^"\']*["\'].*?>(.*?)</div>\s*(?:<div[^>]*class|<script)', html, re.S)
+        if article:
+            text = re.sub(r'<[^>]+>', '\n', article.group(1))
+            text = _clean_text(text)
+            if len(text) > 100:
+                return {'title': title, 'text': text, 'length': len(text)}
+
+        # 方法3: trafilatura 兜底
+        text = trafilatura.extract(html, include_comments=False, output_format='txt', favor_recall=True)
+        if text and len(text) > 100:
+            if not title:
+                title = text.split('\n')[0].strip()[:80]
+            return {'title': title, 'text': text, 'length': len(text)}
+
+    except Exception as e:
+        logger.debug(f"新浪财经抓取失败: {e}")
+    return {}
+
+
 # ── 财新专用 ──
 
 def _try_caixin(url: str) -> dict:
@@ -608,6 +658,9 @@ def extract_article(url: str) -> dict:
 
     if 'caixin.com' in url:
         strategies.append(('财新', _try_caixin))
+
+    if 'finance.sina.com.cn' in url or 'sina.com.cn' in url:
+        strategies.append(('新浪财经', _try_sina_finance))
 
     if '10jqka.com.cn' in url or '10jqka' in url or 'ths.com' in url:
         strategies.append(('10jqka', _try_10jqka))

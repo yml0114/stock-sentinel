@@ -1,7 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 
-/// 专业K线图组件 v4 — Listener手势（绕过ListView抢占）
+/// 专业K线图组件 v6 — Listener手势（绕过ListView抢占，确定性解决）
 class ProfessionalKlineChart extends StatefulWidget {
   final List<Map<String, dynamic>> data;
   final String currencySymbol;
@@ -39,11 +39,12 @@ class _ProfessionalKlineChartState extends State<ProfessionalKlineChart> {
         SizedBox(
           height: 300,
           child: Listener(
-            // Listener 不参与手势竞技场
             onPointerDown: (e) {
-              _showCrosshair = true;
-              _updateCrosshair(e.localPosition);
-              setState(() {});
+              if (!_showCrosshair) {
+                _showCrosshair = true;
+                _updateCrosshair(e.localPosition);
+                setState(() {});
+              }
             },
             onPointerMove: (e) {
               if (_showCrosshair) {

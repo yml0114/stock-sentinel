@@ -13,6 +13,10 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# 增加版本号即可强制清空旧缓存（例如 dedup 逻辑升级后）
+_CACHE_VERSION = 2
+_CACHE_VERSION_KEY = '_cache_version'
+
 # 磁盘缓存路径
 _CACHE_DIR = os.path.join(os.path.dirname(config.DB_PATH), 'article_cache')
 _INDEX_PATH = os.path.join(_CACHE_DIR, 'index.json')
@@ -30,8 +34,10 @@ def _save_index():
     """保存索引到磁盘"""
     try:
         _ensure_dir()
+        save_data = dict(_index)
+        save_data[_CACHE_VERSION_KEY] = _CACHE_VERSION
         with open(_INDEX_PATH, 'w', encoding='utf-8') as f:
-            json.dump(_index, f, ensure_ascii=False, indent=0)
+            json.dump(save_data, f, ensure_ascii=False, indent=0)
     except Exception as e:
         logger.warning(f"索引保存失败: {e}")
 
@@ -43,7 +49,14 @@ def _load_index():
         if os.path.exists(_INDEX_PATH):
             with open(_INDEX_PATH, 'r', encoding='utf-8') as f:
                 _index = json.load(f)
-            logger.info(f"💾 文章缓存索引加载: {len(_index)} 篇")
+            # 版本不匹配则清空旧缓存（dedup 升级等场景）
+            if _index.get(_CACHE_VERSION_KEY) != _CACHE_VERSION:
+                logger.info(f"🔄 文章缓存版本不匹配，清空旧缓存")
+                _index = {}
+                _save_index()
+            else:
+                _index.pop(_CACHE_VERSION_KEY, None)
+                logger.info(f"💾 文章缓存索引加载: {len(_index)} 篇")
     except Exception as e:
         logger.warning(f"索引加载失败: {e}")
         _index = {}

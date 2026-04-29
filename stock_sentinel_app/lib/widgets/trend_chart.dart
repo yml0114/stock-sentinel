@@ -1,7 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 
-/// 分时走势线组件 v4 — Listener手势（绕过ListView抢占）
+/// 分时走势线组件 v6 — Listener手势（绕过ListView抢占，确定性解决）
 class TrendChart extends StatefulWidget {
   final Map<String, dynamic> trendData;
   final String currencySymbol;
@@ -21,6 +21,8 @@ class _TrendChartState extends State<TrendChart> {
   Offset? _crosshairPos;
   double _scale = 1.0;
   bool _showCrosshair = false;
+  // 双指缩放状态
+  double? _initialFingerDistance;
 
   List<Map<String, dynamic>> get _points {
     final raw = widget.trendData['trend'] as List? ?? [];
@@ -49,11 +51,12 @@ class _TrendChartState extends State<TrendChart> {
         SizedBox(
           height: 250,
           child: Listener(
-            // Listener 不参与手势竞技场，ListView抢不走
             onPointerDown: (e) {
-              _showCrosshair = true;
-              _updateCrosshair(e.localPosition);
-              setState(() {});
+              if (!_showCrosshair) {
+                _showCrosshair = true;
+                _updateCrosshair(e.localPosition);
+                setState(() {});
+              }
             },
             onPointerMove: (e) {
               if (_showCrosshair) {
