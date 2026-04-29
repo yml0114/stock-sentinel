@@ -156,6 +156,15 @@ class ApiService {
     return _extract(res) as Map<String, dynamic>;
   }
 
+  // ── 分时走势 ──
+
+  Future<Map<String, dynamic>> getTrend(String code, {String market = ''}) async {
+    final params = <String, dynamic>{};
+    if (market.isNotEmpty) params['market'] = market;
+    final res = await _dio.get('/trend/$code', queryParameters: params);
+    return _extract(res) as Map<String, dynamic>;
+  }
+
   // ── 千股千评 ──
 
   Future<Map<String, dynamic>> getComment(String code) async {

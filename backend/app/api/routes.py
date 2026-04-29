@@ -19,6 +19,7 @@ from app.database import (
 from app.auth import send_code, verify_code, create_token, verify_token
 from app.data.stock_data import (
     get_batch_quotes, get_realtime_quote, search_stocks, get_kline_data, detect_market,
+    get_intraday_trend,
 )
 from app.data.news_intel import fetch_all_news, fetch_all_raw
 from app.news_cache import get_raw_news, get_filtered_news, refresh_news_background, cache_stats
@@ -243,6 +244,13 @@ async def api_search_stocks(q: str = Query("", min_length=1), limit: int = Query
 async def api_get_kline(stock_code: str, period: str = Query("daily"), days: int = Query(120, ge=5, le=1000), market: str = Query("")):
     """获取K线历史数据 — 自动识别市场选择数据源"""
     data = get_kline_data(stock_code, period=period, days=days, market=market)
+    return {"code": 0, "data": data}
+
+
+@router.get("/trend/{stock_code}")
+async def api_get_trend(stock_code: str, market: str = Query("")):
+    """获取今日分时趋势 + 实时行情 — 用于绘制分时图"""
+    data = get_intraday_trend(stock_code, market=market)
     return {"code": 0, "data": data}
 
 

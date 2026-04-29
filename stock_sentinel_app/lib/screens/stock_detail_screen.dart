@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../models/event.dart';
 import '../widgets/kline_chart.dart';
+import '../widgets/trend_chart.dart';
 import '../widgets/event_card.dart';
 
 class StockDetailScreen extends StatefulWidget {
@@ -18,10 +19,12 @@ class StockDetailScreen extends StatefulWidget {
 class _StockDetailScreenState extends State<StockDetailScreen> {
   final _api = ApiService();
   List<Map<String, dynamic>> _klineData = [];
+  Map<String, dynamic> _trendData = {};
   Map<String, dynamic> _profile = {};
   Map<String, dynamic> _comment = {};
   List<SentinelEvent> _events = [];
   bool _loadingKline = true;
+  bool _loadingTrend = true;
   bool _loadingProfile = true;
   double _currentPrice = 0;
   String _period = 'daily';
@@ -31,11 +34,67 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
   Map<String, dynamic> _indicators = {};
   bool _loadingDiagnose = false;
 
+  // 分时/K线切换
+  bool _showTrend = true; // 默认显示分时
+  Timer? _refreshTimer;
+  bool _isTradingHours = false;
+
   @override
   void initState() {
     super.initState();
     _updateCurrency();
     _loadAll();
+    _checkTradingHours();
+    _startAutoRefresh();
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  bool _checkTradingHours() {
+    final now = DateTime.now();
+    // 周一到周五
+    if (now.weekday > 5) {
+      _isTradingHours = false;
+      return false;
+    }
+    final hour = now.hour;
+    final minute = now.minute;
+    final t = hour * 60 + minute;
+    // 9:15 - 11:30, 13:00 - 15:00
+    _isTradingHours = (t >= 9 * 60 + 15 && t <= 11 * 60 + 30) ||
+                      (t >= 13 * 60 && t <= 15 * 60);
+    return _isTradingHours;
+  }
+
+  void _startAutoRefresh() {
+    _refreshTimer?.cancel();
+    // 每5秒刷新行情和分时数据（交易时段）
+    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (_checkTradingHours() && mounted) {
+        _loadTrend(silent: true);
+        _loadProfile();
+      }
+    });
+  }
+
+  Future<void> _loadTrend({bool silent = false}) async {
+    if (!silent) setState(() => _loadingTrend = true);
+    try {
+      final data = await _api.getTrend(widget.code, market: widget.market);
+      if (mounted) setState(() {
+        _trendData = data;
+        _loadingTrend = false;
+        // 更新实时价格
+        final rt = data['realtime'] as Map<String, dynamic>? ?? {};
+        _currentPrice = (rt['price'] as num?)?.toDouble() ?? _currentPrice;
+      });
+    } catch (e) {
+      if (mounted && !silent) setState(() => _loadingTrend = false);
+    }
   }
 
   void _updateCurrency() {
@@ -52,7 +111,7 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
   }
 
   Future<void> _loadAll() async {
-    await Future.wait([_loadKline(), _loadProfile(), _loadEvents(), _loadIndicators()]);
+    await Future.wait([_loadTrend(), _loadKline(), _loadProfile(), _loadEvents(), _loadIndicators()]);
   }
 
   Future<void> _loadKline() async {
@@ -343,11 +402,14 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
           padding: const EdgeInsets.all(16),
           children: [
             // ── 实时行情卡片 ──
-            if (_comment.isNotEmpty) _buildQuoteHeader(),
+            if (_trendData.isNotEmpty && _trendData['realtime'] != null)
+              _buildRealtimeHeader()
+            else if (_comment.isNotEmpty)
+              _buildQuoteHeader(),
             const SizedBox(height: 16),
 
-            // ── K线图 ──
-            _buildPeriodTabs(),
+            // ── 分时/K线切换 ──
+            _buildChartTabs(),
             const SizedBox(height: 8),
             Container(
               decoration: BoxDecoration(
@@ -355,12 +417,19 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: Colors.white.withOpacity(0.08)),
               ),
-              child: _loadingKline
-                  ? const SizedBox(height: 300, child: Center(child: CircularProgressIndicator()))
-                  : ProfessionalKlineChart(
-                      data: _klineData,
-                      currencySymbol: _currencySymbol,
-                    ),
+              child: _showTrend
+                  ? (_loadingTrend
+                      ? const SizedBox(height: 270, child: Center(child: CircularProgressIndicator()))
+                      : TrendChart(
+                          trendData: _trendData,
+                          currencySymbol: _currencySymbol,
+                        ))
+                  : (_loadingKline
+                      ? const SizedBox(height: 300, child: Center(child: CircularProgressIndicator()))
+                      : ProfessionalKlineChart(
+                          data: _klineData,
+                          currencySymbol: _currencySymbol,
+                        )),
             ),
             const SizedBox(height: 20),
 
@@ -433,6 +502,162 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
       case 'US': return '美股';
       default: return 'A股';
     }
+  }
+
+  Widget _buildRealtimeHeader() {
+    final rt = _trendData['realtime'] as Map<String, dynamic>? ?? {};
+    final price = (rt['price'] as num?)?.toDouble() ?? 0;
+    final changePct = (rt['changePct'] as num?)?.toDouble() ?? 0;
+    final changeAmt = (rt['changeAmt'] as num?)?.toDouble() ?? 0;
+    final high = (rt['high'] as num?)?.toDouble() ?? 0;
+    final low = (rt['low'] as num?)?.toDouble() ?? 0;
+    final open = (rt['open'] as num?)?.toDouble() ?? 0;
+    final volume = (rt['volume'] as num?)?.toDouble() ?? 0;
+    final prevClose = (rt['prevClose'] as num?)?.toDouble() ?? 0;
+    final isUp = changePct >= 0;
+    final color = isUp ? const Color(0xFFEF4444) : const Color(0xFF22C55E);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A2E),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withOpacity(0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                '$_currencySymbol${price.toStringAsFixed(2)}',
+                style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: color),
+              ),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${isUp ? "+" : ""}${changeAmt.toStringAsFixed(2)} (${isUp ? "+" : ""}${changePct.toStringAsFixed(2)}%)',
+                    style: TextStyle(fontSize: 15, color: color, fontWeight: FontWeight.w600),
+                  ),
+                  if (_isTradingHours)
+                    Row(
+                      children: [
+                        Container(
+                          width: 6, height: 6,
+                          decoration: const BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Color(0xFF22C55E),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Text('实时', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 11)),
+                      ],
+                    ),
+                ],
+              ),
+              const Spacer(),
+              Text(widget.code, style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 13)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _miniMetric('开盘', '$_currencySymbol${open.toStringAsFixed(2)}'),
+              _miniMetric('最高', '$_currencySymbol${high.toStringAsFixed(2)}', color: const Color(0xFFEF4444)),
+              _miniMetric('最低', '$_currencySymbol${low.toStringAsFixed(2)}', color: const Color(0xFF22C55E)),
+              _miniMetric('昨收', '$_currencySymbol${prevClose.toStringAsFixed(2)}'),
+              _miniMetric('成交量', _formatVol(volume)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _miniMetric(String label, String value, {Color color = const Color(0xFF4A90D9)}) {
+    return Column(
+      children: [
+        Text(value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: color)),
+        const SizedBox(height: 2),
+        Text(label, style: TextStyle(fontSize: 10, color: Colors.white.withOpacity(0.4))),
+      ],
+    );
+  }
+
+  String _formatVol(double vol) {
+    if (vol >= 1e8) return '${(vol / 1e8).toStringAsFixed(1)}亿';
+    if (vol >= 1e4) return '${(vol / 1e4).toStringAsFixed(0)}万';
+    return vol.toStringAsFixed(0);
+  }
+
+  Widget _buildChartTabs() {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          _chartTab('分时', _showTrend, () {
+            setState(() => _showTrend = true);
+          }),
+          _chartTab('K线', !_showTrend, () {
+            setState(() => _showTrend = false);
+          }),
+          if (!_showTrend) ...[
+            const Spacer(),
+            PopupMenuButton<String>(
+              icon: Icon(Icons.more_horiz, color: Colors.white.withOpacity(0.5), size: 18),
+              onSelected: (v) {
+                final parts = v.split('_');
+                _switchPeriod(parts[0], int.parse(parts[1]), parts[2]);
+              },
+              itemBuilder: (_) => [
+                const PopupMenuItem(value: '1m_1_1分', child: Text('1分钟')),
+                const PopupMenuItem(value: '5m_2_5分', child: Text('5分钟')),
+                const PopupMenuItem(value: '15m_3_15分', child: Text('15分钟')),
+                const PopupMenuItem(value: '30m_4_30分', child: Text('30分钟')),
+                const PopupMenuItem(value: '60m_5_60分', child: Text('60分钟')),
+                const PopupMenuDivider(),
+                const PopupMenuItem(value: 'daily_60_日K', child: Text('日K · 60天')),
+                const PopupMenuItem(value: 'daily_120_日K', child: Text('日K · 120天')),
+                const PopupMenuItem(value: 'daily_250_日K', child: Text('日K · 一年')),
+                const PopupMenuDivider(),
+                const PopupMenuItem(value: 'weekly_365_周K', child: Text('周K · 一年')),
+                const PopupMenuItem(value: 'weekly_730_周K', child: Text('周K · 两年')),
+                const PopupMenuItem(value: 'monthly_1000_月K', child: Text('月K · 全部')),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _chartTab(String label, bool isActive, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        decoration: BoxDecoration(
+          color: isActive ? const Color(0xFF4A90D9).withOpacity(0.2) : Colors.transparent,
+          borderRadius: BorderRadius.circular(6),
+          border: isActive ? Border.all(color: const Color(0xFF4A90D9).withOpacity(0.4)) : null,
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isActive ? const Color(0xFF4A90D9) : Colors.white.withOpacity(0.5),
+            fontSize: 14,
+            fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildQuoteHeader() {
