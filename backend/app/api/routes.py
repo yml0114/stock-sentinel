@@ -372,36 +372,61 @@ async def api_get_news_cache_stats():
 
 @router.get("/article")
 async def api_get_article(url: str = Query(...), translate: bool = Query(True)):
-    """从URL抓取文章正文，自动翻译成中文（translate=false返回原文）"""
+    """从URL抓取文章正文，自动翻译成中文（translate=false返回原文）
+    缓存同时保存中英文版本，根据 translate 参数返回对应版本"""
     from app.data.article_fetcher import extract_article
     from app.data.translator import translate_to_zh
+    from app.data.article_cache import get_article_for_display, cache_article
+
+    # 1. 优先走缓存（中英文版本都有，秒返回）
+    cached = get_article_for_display(url, translate=translate)
+    if cached:
+        logger.debug(f"💾 文章缓存命中: {cached.get('title', '')[:40]}")
+        return {"code": 0, "data": cached}
+
+    # 2. 未命中 → 实时抓取
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, extract_article, url)
 
-    # 保留英文原文，同时提供中文翻译
+    if not result.get('success') or not result.get('content'):
+        return {"code": 404, "message": "文章抓取失败", "data": result}
+
     content_en = result.get('content', '')
     title_en = result.get('title', '')
 
-    if translate and content_en:
-        # 检测是否为非中文内容，翻译
-        import re as _re
-        chinese_chars = len(_re.findall(r'[\u4e00-\u9fff]', content_en))
-        is_chinese = chinese_chars / max(len(content_en), 1) > 0.3
+    # 3. 翻译（如果有非中文内容，且用户要求翻译）
+    import re as _re
+    chinese_chars = len(_re.findall(r'[\u4e00-\u9fff]', content_en))
+    is_chinese = chinese_chars / max(len(content_en), 1) > 0.3
 
-        if not is_chinese:
-            result['content_zh'] = await loop.run_in_executor(None, translate_to_zh, content_en)
-            result['title_zh'] = await loop.run_in_executor(None, translate_to_zh, title_en)
-            result['content'] = result['content_zh']
-            result['title'] = result['title_zh']
-            result['content_en'] = content_en
-            result['title_en'] = title_en
-            result['isTranslated'] = True
-        else:
-            result['isTranslated'] = False
+    title_zh = title_en
+    content_zh = content_en
+    if translate and not is_chinese:
+        title_zh = await loop.run_in_executor(None, translate_to_zh, title_en)
+        content_zh = await loop.run_in_executor(None, translate_to_zh, content_en)
+
+    # 4. 存缓存（同时保存中英文版本）
+    cache_article(url, {
+        'title_zh': title_zh,
+        'title_en': title_en,
+        'content_zh': content_zh,
+        'content_en': content_en,
+        'isTranslated': translate and not is_chinese,
+    })
+
+    # 5. 根据 translate 参数返回对应版本
+    if translate:
+        return {"code": 0, "data": {
+            "title": title_zh, "content": content_zh,
+            "title_en": title_en, "content_en": content_en,
+            "isTranslated": not is_chinese,
+        }}
     else:
-        result['isTranslated'] = False
-
-    return {"code": 0, "data": result}
+        return {"code": 0, "data": {
+            "title": title_en, "content": content_en,
+            "title_zh": title_zh, "content_zh": content_zh,
+            "isTranslated": False,
+        }}
 
 
 # ── 系统状态 ──

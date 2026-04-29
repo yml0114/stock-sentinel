@@ -85,10 +85,27 @@ def _do_fetch_raw():
             _raw_ts = time.time()
             _save_to_disk(items, _RAW_CACHE_PATH)
             logger.info(f"✅ 原始新闻缓存更新: {len(items)}条")
+            
+            # 预抓取热门文章全文（后台，不阻塞）
+            _prefetch_top_articles(items)
     except Exception as e:
         logger.error(f"原始新闻抓取失败: {e}")
     finally:
         _fetching_raw = False
+
+
+def _prefetch_top_articles(items: list[dict]):
+    """预抓取Top文章全文+翻译，后台线程"""
+    urls = []
+    for item in items:
+        url = item.get('url', '')
+        if url and 'wallstreetcn' not in url and 'cls.cn' not in url:
+            urls.append(url)
+        if len(urls) >= 15:
+            break
+    if urls:
+        from app.data.article_cache import prefetch_articles
+        prefetch_articles(urls)
 
 
 def _do_fetch_filtered():

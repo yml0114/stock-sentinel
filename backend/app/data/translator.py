@@ -19,6 +19,9 @@ _CACHE_MAX = 2000
 # 并发翻译线程池
 _executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix='translate')
 
+# SimplyTranslate 每次最大字符限制（URL长度限制）
+_MAX_CHUNK = 450
+
 
 def _is_chinese(text: str) -> bool:
     if not text:
@@ -30,7 +33,7 @@ def _is_chinese(text: str) -> bool:
 def _simplytranslate(text: str) -> str:
     """SimplyTranslate — 底层是 Google Translate，国内可用"""
     try:
-        encoded = urllib.parse.quote(text[:500])
+        encoded = urllib.parse.quote(text[:_MAX_CHUNK])
         resp = requests.get(
             f"https://simplytranslate.org/api/translate?from=en&to=zh&text={encoded}",
             timeout=8,
@@ -57,7 +60,6 @@ def _jina_translate(text: str) -> str:
         )
         if resp.status_code == 200:
             result = resp.text.strip()
-            # 去掉可能的引号和前缀
             result = re.sub(r'^["\']|["\']$', '', result)
             result = re.sub(r'^(Translation|翻译)[：:]\s*', '', result)
             if result and result != text:
@@ -89,11 +91,8 @@ def _youdao_translate(text: str) -> str:
     return ""
 
 
-def translate_to_zh(text: str) -> str:
-    """
-    翻译英文 → 中文
-    SimplyTranslate (Google) → jina.ai → 有道
-    """
+def _translate_chunk(text: str) -> str:
+    """翻译单个chunk"""
     if not text or len(text.strip()) < 3:
         return text
 
@@ -119,6 +118,53 @@ def translate_to_zh(text: str) -> str:
     return text
 
 
+def translate_to_zh(text: str) -> str:
+    """
+    翻译英文 → 中文（支持长文本分块翻译）
+    按段落分割，每段独立翻译，最后拼接
+    """
+    if not text or len(text.strip()) < 3:
+        return text
+
+    if _is_chinese(text):
+        return text
+
+    # 按双换行分割段落
+    paragraphs = text.split('\n\n')
+    
+    if len(text) <= _MAX_CHUNK:
+        # 短文本直接翻译
+        return _translate_chunk(text)
+
+    # 长文本：分段翻译
+    translated_parts = []
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            translated_parts.append('')
+            continue
+        if _is_chinese(para):
+            translated_parts.append(para)
+            continue
+        if len(para) <= _MAX_CHUNK:
+            translated_parts.append(_translate_chunk(para))
+        else:
+            # 超长段落按句子分割
+            sentences = re.split(r'(?<=[.!?。！？])\s+', para)
+            chunk = ''
+            for sent in sentences:
+                if len(chunk) + len(sent) < _MAX_CHUNK:
+                    chunk += (' ' if chunk else '') + sent
+                else:
+                    if chunk:
+                        translated_parts.append(_translate_chunk(chunk))
+                    chunk = sent
+            if chunk:
+                translated_parts.append(_translate_chunk(chunk))
+
+    return '\n\n'.join(translated_parts)
+
+
 def _translate_single_item(item: dict) -> dict:
     """翻译单条新闻的标题和内容（线程安全）"""
     title = item.get('title', '')
@@ -131,7 +177,8 @@ def _translate_single_item(item: dict) -> dict:
             item['title_en'] = title
 
     if content and not _is_chinese(content):
-        summary = content[:300]
+        # 内容摘要翻译（前800字符）
+        summary = content[:800]
         new_content = translate_to_zh(summary)
         if new_content != summary:
             item['content'] = new_content
@@ -154,7 +201,6 @@ def translate_news_items(items: list, source_filter: str = '') -> list:
         if (title and not _is_chinese(title)) or (content and not _is_chinese(content)):
             to_translate.append(item)
 
-    # 限制最多翻译30条
     max_translate = 30
     to_translate = to_translate[:max_translate]
 

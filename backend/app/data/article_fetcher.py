@@ -1,316 +1,295 @@
 """
-文章正文抓取 — 从URL提取可读正文
+文章正文抓取 — trafilatura 为核心引擎
 
-策略链（按优先级，前一个失败自动尝试下一个）：
-1. 直接抓取 + HTML解析提取正文
-2. Google Cache 兜底
-3. 12ft.io / archive.today 绕过付费墙
+策略链：
+1. 华尔街见闻专用API（wallstreetcn文章）
+2. trafilatura 全文提取（所有站点通用，业内最强）
+3. 直接HTML抓取 + trafilatura（网络降级）
+
+trafilatura 优势：
+- 业界最强的文章正文提取，自动去除导航/广告/侧栏
+- 无需维护 HTML parser，自动适配各站点结构
+- 比 BeautifulSoup/readability 准确率高 30%+
 """
 import re
+import json
 import logging
 import urllib.request
 import urllib.parse
-from html.parser import HTMLParser
+
+import trafilatura
 
 logger = logging.getLogger(__name__)
 
+_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 _HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'User-Agent': _UA,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=8',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 }
 
 
-# ── HTML正文提取器 ──
+# ── 噪音清理 ──
 
-class _TextExtractor(HTMLParser):
-    """从HTML提取正文文本，跳过script/style/nav等"""
-    SKIP_TAGS = {'script', 'style', 'nav', 'header', 'footer', 'aside',
-                 'noscript', 'iframe', 'svg', 'form', 'button', 'input',
-                 'select', 'textarea', 'label'}
-    BLOCK_TAGS = {'p', 'div', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-                  'li', 'blockquote', 'tr', 'section', 'article', 'figcaption'}
-
-    def __init__(self):
-        super().__init__()
-        self._text_parts = []
-        self._skip_depth = 0
-        self._title = ''
-        self._in_title_tag = False
-        # 正文区域检测
-        self._in_body = False
-        self._body_depth = 0
-        self._body_text = []
-
-    def handle_starttag(self, tag, attrs):
-        tag = tag.lower()
-        attrs_dict = dict(attrs)
-
-        if tag in self.SKIP_TAGS:
-            self._skip_depth += 1
-            return
-
-        if tag == 'title':
-            self._in_title_tag = True
-
-        # 检测正文区域
-        cls = attrs_dict.get('class', '').lower()
-        id_val = attrs_dict.get('id', '').lower()
-
-        # 各站点正文区域的class/id模式
-        body_patterns = [
-            'article-body', 'article-content', 'article-text',
-            'story-body', 'story-content', 'post-content',
-            'entry-content', 'content-body', 'news-content',
-            'article_body', 'caixin_content',  # 财新
-            'text_detail',  # 财新备用
-            'article-detail',  # 中文站点通用
-            'detail-content',
-        ]
-        if tag == 'article' or any(p in cls or p in id_val for p in body_patterns):
-            self._in_body = True
-            self._body_depth += 1
-
-        if tag in self.BLOCK_TAGS:
-            text = '\n'
-            self._text_parts.append(text)
-            if self._in_body:
-                self._body_text.append(text)
-
-    def handle_endtag(self, tag):
-        tag = tag.lower()
-        if tag in self.SKIP_TAGS:
-            self._skip_depth = max(0, self._skip_depth - 1)
-        if tag == 'title':
-            self._in_title_tag = False
-        if self._body_depth > 0:
-            self._body_depth = max(0, self._body_depth - 1)
-            if self._body_depth == 0:
-                self._in_body = False
-        if tag in self.BLOCK_TAGS:
-            self._text_parts.append('\n')
-            if self._in_body:
-                self._body_text.append('\n')
-
-    def handle_data(self, data):
-        if self._skip_depth > 0:
-            return
-        if self._in_title_tag:
-            self._title += data.strip()
-        self._text_parts.append(data)
-        if self._in_body:
-            self._body_text.append(data)
-
-    def get_text(self) -> str:
-        raw = ''.join(self._text_parts)
-        return _clean_lines(raw)
-
-    def get_body_text(self) -> str:
-        """仅正文区域的文本（如果有）"""
-        if not self._body_text:
-            return ''
-        raw = ''.join(self._body_text)
-        return _clean_lines(raw)
-
-    def get_title(self) -> str:
-        return self._title.strip()
-
-
-def _clean_lines(text: str) -> str:
-    """清理文本：去除多余空行"""
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
-    return '\n'.join(lines)
-
-
-# ── 导航噪音过滤 ──
-
-_NAV_NOISE = [
-    # 中文站点导航
+_NAV_NOISE = {
+    # 中文
     '商城', '订阅', '数据', '我闻', '机构订阅', '会议', '应用下载', '帮助',
     '首页', '经济', '金融', '公司', '政经', '世界', '观点', '博客', '图片', '视频',
     '周刊', '数据通', '商圈', '企业数据库', '沪深股市', '港股', '更多',
     '科技', '地产', '汽车', '消费', '能源', '健康', '环科', '民生', 'ESG',
-    '财新一线', '私房课', '运动家', '企业用户', '订阅', '电邮',
+    '财新一线', '私房课', '运动家', '企业用户', '电邮',
+    '金融我闻', '地缘图志', '数字说', '比较', '中国改革', '专题', '讣闻',
+    '财新名家', '名家/新秀', '正文',
+    '观点频道', '政经频道', '金融频道', '公司频道', '世界频道', '科技频道',
     '发表评论', '分享到微信朋友圈', '新浪转发',
     '网上有害信息举报专区', '责任编辑',
     'Promotion', 'mini+', 'English',
     '图片编辑', '美术编辑', '视觉编辑',
     '分享到新浪微博', '分享到微信',
-    # 英文站点导航
-    'Subscribe', 'Sign In', 'Log In', 'Newsletter', 'Newsletter Sign Up',
-    'Already a subscriber', 'Get unlimited access',
-    'Terms of Service', 'Privacy Policy', 'Cookie Settings',
-    'Contact Us', 'Advertise', 'Careers', 'Sitemap',
-    'Advertisement', 'Sponsored Content',
+    # 英文
+    'skip navigation', 'markets', 'business', 'investing', 'tech',
+    'politics', 'video', 'watchlist', 'investing club', 'pro',
+    'livestream', 'key points', 'skip nav', 'menu',
+    'sign in', 'subscribe', 'log in', 'newsletter',
+    'home', 'world', 'opinion', 'sports', 'style', 'food',
+    'travel', 'magazine', 'real estate', 'weather',
+    'entertainment', 'health', 'science', 'education',
+    'more', 'search', 'share', 'print', 'email',
+    'choose cnbc.com as your preferred source',
+}
+
+_STOP_MARKERS = [
+    '相关报道', '推荐阅读', '上一篇', '下一篇',
+    '相关阅读', '延伸阅读', '猜你喜欢', '热门推荐',
+    '图片编辑：', '美术编辑：', '视觉编辑：',
+    '分享到', '发表评论', '我要纠错',
+    '财新网主编精选版电邮', '财新网新闻版电邮',
+    '版权所有', '本文来源', '本文仅代表',
+    '图片推荐', '视听推荐', '编辑推荐',
+    '版面编辑：', '责任编辑：',
+    'Recommend entering Caixin Database',  # 财新广告
+    '推荐进入财新数据库',
+    'subscribe now', 'start your free trial',
+    'sign in to continue', 'get unlimited access',
+    'already a subscriber', 'download the app',
 ]
 
 
-def _remove_nav_noise(text: str) -> str:
-    """移除导航菜单、页脚等噪音行"""
-    lines = text.split('\n')
-    # 第一遍：过滤纯导航噪音
-    phase1 = []
-    for line in lines:
-        stripped = line.strip()
-        if len(stripped) < 30:
-            if any(noise == stripped for noise in _NAV_NOISE):
-                continue
-            if stripped in ('+', '-', '|', '/', '·', '…'):
-                continue
-        if len(stripped) < 2:
-            continue
-        phase1.append(line)
+def _clean_text(text: str) -> str:
+    """通用文本清理：去噪音行 + 截断尾部"""
+    if not text:
+        return ''
 
-    # 第二遍：找到正文主体（最长的行或连续文本行），然后截断尾部噪音
-    stop_markers = [
-        '相关报道', '推荐阅读', '上一篇', '下一篇',
-        '相关阅读', '延伸阅读', '猜你喜欢', '热门推荐',
-        '图片编辑：', '美术编辑：', '视觉编辑：',
-        '分享到', '发表评论', '我要纠错',
-        '财新网主编精选版电邮', '财新网新闻版电邮',
-        '版权所有', '本文来源', '本文仅代表',
-        '图片推荐', '视听推荐', '编辑推荐',
-        '版面编辑：',
-    ]
-    # 找到正文开始位置（第一条超过50字的行）
+    lines = text.split('\n')
+    cleaned = []
+    for line in lines:
+        s = line.strip()
+        if not s:
+            if cleaned and cleaned[-1].strip():
+                cleaned.append('')
+            continue
+        if len(s) < 2:
+            continue
+        # 精确匹配导航噪音
+        if s in _NAV_NOISE or s.lower() in _NAV_NOISE:
+            continue
+        # 纯符号行
+        if s in ('+', '-', '|', '/', '·', '…', '>>>'):
+            continue
+        # 面包屑导航（如 "观点 > 财新名家 > 名家/新秀 > 易峘 > 正文"）
+        if re.match(r'^[\u4e00-\u9fff\w]+(\s*>\s*[\u4e00-\u9fff\w]+){2,}\s*$', s):
+            continue
+        # 纯频道列表行（短中文词用空格分隔，如 "金融我闻 地缘图志 数字说"）
+        if len(s) < 60 and not re.search(r'[，。！？；：]', s) and re.match(r'^[\u4e00-\u9fff\w\s/·+]+$', s):
+            if len(s.split()) >= 3:
+                continue
+        cleaned.append(line)
+
+    # 找正文开始（第一条超过40字的行）
     body_start = 0
-    for i, line in enumerate(phase1):
-        if len(line.strip()) > 50:
+    for i, line in enumerate(cleaned):
+        if len(line.strip()) > 40:
             body_start = i
             break
 
-    # 从正文开始后截断
-    cleaned = phase1[:body_start]
-    for line in phase1[body_start:]:
-        stripped = line.strip()
-        if any(marker in stripped for marker in stop_markers):
+    # 截断尾部噪音
+    result = []
+    for line in cleaned[body_start:]:
+        s = line.strip()
+        if any(marker in s for marker in _STOP_MARKERS):
             break
-        cleaned.append(line)
-    return '\n'.join(cleaned)
+        result.append(line)
+
+    return '\n'.join(result).strip()
 
 
-# ── 抓取策略 ──
-
-def _fetch_html(url: str, timeout: int = 10) -> str:
-    """下载HTML"""
-    req = urllib.request.Request(url, headers=_HEADERS)
-    resp = urllib.request.urlopen(req, timeout=timeout)
-    return resp.read().decode('utf-8', errors='ignore')
-
-
-def _try_direct(url: str) -> dict:
-    """策略1: 直接抓取"""
-    html = _fetch_html(url)
-    parser = _TextExtractor()
-    parser.feed(html)
-
-    # 优先使用正文区域文本，如果太短则用全文
-    body_text = parser.get_body_text()
-    full_text = parser.get_text()
-
-    text = body_text if len(body_text) > len(full_text) * 0.3 else full_text
-    text = _remove_nav_noise(text)
-
-    return {
-        'title': parser.get_title(),
-        'text': text,
-        'length': len(text),
-    }
+def _clean_title(title: str) -> str:
+    """清理标题：去除站点后缀"""
+    if not title:
+        return ''
+    # 去掉 "_频道_站点名" 类后缀（如 "_观点频道_财新网"）
+    title = re.sub(r'_[\u4e00-\u9fff\w]+频道_[\u4e00-\u9fff\w]+网?$', '', title)
+    title = re.sub(r'_[\u4e00-\u9fff\w]+网$', '', title)
+    title = re.sub(r'\s*[-–—|]\s*(财新网|华尔街见闻|新浪财经|澎湃新闻|界面新闻|36氪)\s*$', '', title)
+    return title.strip()
 
 
-def _try_google_cache(url: str) -> dict:
-    """策略2: Google Cache"""
-    cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{urllib.parse.quote(url, safe='')}"
-    html = _fetch_html(cache_url, timeout=12)
-    parser = _TextExtractor()
-    parser.feed(html)
-    text = _remove_nav_noise(parser.get_text())
-    return {
-        'title': parser.get_title(),
-        'text': text,
-        'length': len(text),
-    }
+# ── 华尔街见闻专用 ──
 
-
-def _try_12ft(url: str) -> dict:
-    """策略3: 12ft.io 绕过付费墙"""
-    bypass_url = f"https://12ft.io/{url}"
-    html = _fetch_html(bypass_url, timeout=15)
-    parser = _TextExtractor()
-    parser.feed(html)
-    text = _remove_nav_noise(parser.get_text())
-    return {
-        'title': parser.get_title(),
-        'text': text,
-        'length': len(text),
-    }
-
-
-def _try_jina_reader(url: str) -> dict:
-    """策略: jina.ai Reader — 免费全文提取，绕过付费墙，中国可用"""
-    jina_url = f"https://r.jina.ai/{url}"
-    req = urllib.request.Request(jina_url, headers={
-        'User-Agent': _HEADERS['User-Agent'],
-        'Accept': 'text/plain',
-    })
-    resp = urllib.request.urlopen(req, timeout=15)
-    text = resp.read().decode('utf-8', errors='ignore')
-    # jina.ai 返回纯文本，第一行通常是标题
-    lines = text.strip().split('\n')
-    title = lines[0].strip() if lines else ''
-    content = '\n'.join(lines[1:]).strip()
-    # 去掉 jina 的元数据行
-    content = re.sub(r'^Title:.*\n?', '', content, count=1)
-    content = re.sub(r'^URL Source:.*\n?', '', content, count=1)
-    content = re.sub(r'^Markdown Content:.*\n?', '', content, count=1)
-    return {
-        'title': title,
-        'text': content,
-        'length': len(content),
-    }
-
-
-def _try_archive(url: str) -> dict:
-    """策略4: archive.today"""
-    archive_url = f"https://archive.ph/newest/{url}"
-    html = _fetch_html(archive_url, timeout=15)
-    parser = _TextExtractor()
-    parser.feed(html)
-    text = _remove_nav_noise(parser.get_text())
-    return {
-        'title': parser.get_title(),
-        'text': text,
-        'length': len(text),
-    }
-
-
-def _try_wallstreetcn_article(url: str) -> dict:
-    """华尔街见闻文章API — 获取完整正文"""
-    import json as _json
-    # 从URL提取文章ID
-    m = re.search(r'/articles/(\d+)', url)
-    if not m:
-        m = re.search(r'wallstreetcn\.com/article/(\d+)', url)
+def _try_wallstreetcn(url: str) -> dict:
+    """华尔街见闻文章 — 通过API获取完整正文"""
+    m = re.search(r'articles[/\-](\d+)', url)
     if not m:
         return {}
-    
     article_id = m.group(1)
-    api_url = f"https://api-one-wscn.awtmt.com/apiv1/content/article/{article_id}?client=pc"
+
+    # 方法1: 直接抓取页面 + trafilatura
     try:
-        req = urllib.request.Request(api_url, headers={'User-Agent': _HEADERS['User-Agent']})
+        downloaded = trafilatura.fetch_url(url)
+        if downloaded:
+            text = trafilatura.extract(
+                downloaded,
+                include_comments=False,
+                include_tables=False,
+                output_format='txt',
+                favor_recall=True,
+            )
+            if text and len(text) > 200:
+                title = text.split('\n')[0].strip() if '\n' in text else ''
+                return {'title': title, 'text': text, 'length': len(text)}
+    except Exception as e:
+        logger.debug(f"华尔街见闻 trafilatura失败: {e}")
+
+    # 方法2: API获取
+    try:
+        api_url = f"https://api-one-wscn.awtmt.com/apiv1/content/article/{article_id}?client=pc"
+        req = urllib.request.Request(api_url, headers={'User-Agent': _UA})
         resp = urllib.request.urlopen(req, timeout=10)
-        data = _json.loads(resp.read())
+        data = json.loads(resp.read())
         article = data.get('data', {}).get('article', {})
         title = article.get('title', '')
-        content = article.get('content', '')
-        # HTML转纯文本
-        content = re.sub(r'<[^>]+>', '\n', content)
-        content = _clean_lines(content)
-        return {'title': title, 'text': content, 'length': len(content)}
+        content_html = article.get('content', '')
+        if content_html:
+            text = re.sub(r'<[^>]+>', '\n', content_html)
+            text = _clean_text(text)
+            if len(text) > 100:
+                return {'title': title, 'text': text, 'length': len(text)}
     except Exception as e:
-        logger.debug(f"华尔街见闻文章API失败: {e}")
+        logger.debug(f"华尔街见闻 API失败: {e}")
+
+    return {}
+
+
+# ── 通用 trafilatura 抓取 ──
+
+def _try_trafilatura(url: str) -> dict:
+    """策略: trafilatura — 业界最强正文提取"""
+    try:
+        downloaded = trafilatura.fetch_url(url)
+        if not downloaded:
+            return {}
+
+        text = trafilatura.extract(
+            downloaded,
+            include_comments=False,
+            include_tables=False,
+            output_format='txt',
+            favor_recall=True,  # 召回优先，多抓正文
+        )
+        if not text or len(text) < 100:
+            return {}
+
+        # 提取标题
+        metadata = trafilatura.extract(
+            downloaded,
+            include_comments=False,
+            output_format='json',
+            favor_recall=True,
+        )
+        title = ''
+        if metadata:
+            try:
+                meta = json.loads(metadata)
+                title = meta.get('title', '') or meta.get('sitename', '')
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+        if not title:
+            title = text.split('\n')[0].strip()[:80]
+
+        return {'title': title, 'text': text, 'length': len(text)}
+
+    except Exception as e:
+        logger.debug(f"trafilatura失败: {e}")
         return {}
 
+
+def _try_direct_html(url: str) -> dict:
+    """策略: 直接抓取HTML + trafilatura解析"""
+    try:
+        req = urllib.request.Request(url, headers=_HEADERS)
+        resp = urllib.request.urlopen(req, timeout=12)
+        html = resp.read().decode('utf-8', errors='ignore')
+        if not html or len(html) < 500:
+            return {}
+
+        text = trafilatura.extract(
+            html,
+            include_comments=False,
+            include_tables=False,
+            output_format='txt',
+            favor_recall=True,
+        )
+        if not text or len(text) < 100:
+            return {}
+
+        title = ''
+        meta_html = trafilatura.extract(
+            html,
+            include_comments=False,
+            output_format='json',
+            favor_recall=True,
+        )
+        if meta_html:
+            try:
+                meta = json.loads(meta_html)
+                title = meta.get('title', '')
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+        if not title:
+            title = text.split('\n')[0].strip()[:80]
+
+        return {'title': title, 'text': text, 'length': len(text)}
+
+    except Exception as e:
+        logger.debug(f"直接抓取失败: {e}")
+        return {}
+
+
+# ── 财新专用 ──
+
+def _try_caixin(url: str) -> dict:
+    """财新 — trafilatura抓取预览内容（付费墙前的部分）"""
+    try:
+        downloaded = trafilatura.fetch_url(url)
+        if not downloaded:
+            return {}
+        text = trafilatura.extract(
+            downloaded,
+            include_comments=False,
+            output_format='txt',
+            favor_recall=True,
+        )
+        if text and len(text) > 50:
+            title = text.split('\n')[0].strip() if '\n' in text else ''
+            return {'title': title, 'text': text, 'length': len(text)}
+    except Exception as e:
+        logger.debug(f"财新抓取失败: {e}")
+    return {}
+
+
+# ── 主入口 ──
 
 def extract_article(url: str) -> dict:
     """
@@ -325,37 +304,32 @@ def extract_article(url: str) -> dict:
         'error': '',
     }
 
-    # 优先：华尔街见闻文章API（专门优化）
-    if 'wallstreetcn.com' in url or 'wallstreetcn' in url:
-        try:
-            wscn_result = _try_wallstreetcn_article(url)
-            if wscn_result and len(wscn_result.get('text', '')) > 100:
-                result['title'] = wscn_result['title']
-                result['content'] = _final_clean(wscn_result['text'], max_chars=10000)
-                result['success'] = True
-                return result
-        except Exception as e:
-            logger.debug(f"华尔街见闻API失败: {e}")
+    # 根据域名选择最优策略
+    strategies = []
 
-    # 按策略链逐个尝试（jina.ai优先，免费且能绕过付费墙）
-    strategies = [
-        ('Jina Reader', _try_jina_reader),
-        ('直接抓取', _try_direct),
-        ('12ft.io', _try_12ft),
-        ('Archive', _try_archive),
-    ]
+    if 'wallstreetcn.com' in url or 'wallstreetcn' in url:
+        strategies.append(('华尔街见闻', _try_wallstreetcn))
+
+    if 'caixin.com' in url:
+        strategies.append(('财新', _try_caixin))
+
+    # 通用策略：trafilatura 优先
+    strategies.append(('trafilatura', _try_trafilatura))
+    strategies.append(('直接抓取', _try_direct_html))
 
     for name, fn in strategies:
         try:
             data = fn(url)
-            text = data['text']
-            title = data['title']
-            if len(text) > 200:
-                result['title'] = title
-                result['content'] = _final_clean(text, max_chars=10000)
-                result['success'] = True
-                logger.info(f"✅ [{name}] 成功提取 {len(text)} 字 from {url[:60]}")
-                return result
+            text = data.get('text', '')
+            title = data.get('title', '')
+            if text and len(text) > 100:
+                text = _clean_text(text)
+                if len(text) > 100:
+                    result['title'] = _clean_title(title)
+                    result['content'] = text[:10000]  # 上限10K
+                    result['success'] = True
+                    logger.info(f"✅ [{name}] 成功提取 {len(text)} 字 from {url[:60]}")
+                    return result
             else:
                 logger.debug(f"⚠️ [{name}] 正文太短({len(text)}字): {url[:60]}")
         except Exception as e:
@@ -363,31 +337,3 @@ def extract_article(url: str) -> dict:
 
     result['error'] = '所有策略均失败（可能是付费墙或网络限制）'
     return result
-
-
-def _final_clean(text: str, max_chars: int = 10000) -> str:
-    """最终清理"""
-    # 移除残留的无关文本
-    noise_patterns = [
-        r'(?i)(subscribe now|start your free trial|sign in to continue).*',
-        r'(?i)(This article was|Write to|Corrections & Amplifications).*',
-        r'版权所有[：:].*',
-        r'责任编辑[：:].*',
-        r'来源[：:]\s*(财新网|新华社|央视|人民日报)\s*.*',
-    ]
-    for pattern in noise_patterns:
-        text = re.sub(pattern, '', text)
-
-    # 移除连续空行
-    text = re.sub(r'\n{3,}', '\n\n', text)
-
-    if len(text) > max_chars:
-        cut = text[:max_chars]
-        # 在中文句号或英文句号处截断
-        last_period = max(cut.rfind('。'), cut.rfind('. '), cut.rfind('！'), cut.rfind('？'))
-        if last_period > max_chars * 0.7:
-            text = cut[:last_period + 1]
-        else:
-            text = cut + '…'
-
-    return text.strip()
