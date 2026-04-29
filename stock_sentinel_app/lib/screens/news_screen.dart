@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/api_service.dart';
 import '../services/news_service.dart';
+import '../services/translator_service.dart';
 
 class NewsScreen extends StatefulWidget {
   const NewsScreen({super.key});
@@ -14,6 +15,7 @@ class NewsScreen extends StatefulWidget {
 class _NewsScreenState extends State<NewsScreen> {
   final _newsService = NewsService();
   final _api = ApiService();
+  final _translator = TranslatorService();
   bool _loading = false;
   String _filter = 'all';
 
@@ -62,7 +64,27 @@ class _NewsScreenState extends State<NewsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('全球财经'),
+        title: _newsService.isTranslating
+            ? Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('全球财经'),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 12, height: 12,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.5,
+                      color: Colors.white.withOpacity(0.5),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${_newsService.translatedCount}/${_newsService.totalCount}',
+                    style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.4)),
+                  ),
+                ],
+              )
+            : const Text('全球财经'),
         actions: [
           IconButton(
             icon: _loading
@@ -154,14 +176,14 @@ class _NewsScreenState extends State<NewsScreen> {
   Widget _buildNewsItem(Map<String, dynamic> item) {
     final source = item['source'] ?? '';
     final sourceType = item['sourceType'] ?? '';
-    final title = item['title'] ?? '';
-    final titleEn = item['title_en'] ?? item['titleEn'] ?? '';
-    final content = item['content'] ?? '';
+    final title = (item['title_cn'] ?? item['title'] ?? '').toString();
+    final titleEn = item['title'] ?? '';  // 原始英文标题
+    final content = (item['content_cn'] ?? item['content'] ?? '').toString();
     final time = item['time'] ?? '';
     final url = item['url'] ?? '';
 
-    final isInternational = sourceType == 'international';
-    final isTranslated = titleEn.toString().isNotEmpty;
+    final isEnglishTitle = _translator.isEnglish(titleEn.toString());
+    final hasTranslation = (item['title_cn'] ?? '').toString().isNotEmpty;
     final hasUrl = url.toString().isNotEmpty;
 
     return GestureDetector(
@@ -174,8 +196,8 @@ class _NewsScreenState extends State<NewsScreen> {
             // ── 来源 + 时间 ──
             Row(
               children: [
-                _sourceTag(source, isInternational),
-                if (isTranslated) ...[
+                _sourceTag(source, _translator.isEnglish(titleEn.toString())),
+                if (hasTranslation) ...[
                   const SizedBox(width: 6),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
@@ -208,7 +230,7 @@ class _NewsScreenState extends State<NewsScreen> {
             ),
 
             // ── 英文原标题（小字灰色，仅翻译过的显示）──
-            if (isTranslated) ...[
+            if (hasTranslation && isEnglishTitle) ...[
               const SizedBox(height: 4),
               Text(
                 titleEn,

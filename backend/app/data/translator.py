@@ -1,7 +1,8 @@
 """
-翻译模块 — 3引擎并行竞争（SimplyTranslate/jina/有道），取最快结果
+翻译模块 — 3引擎并行竞争，取最快结果
 """
 import re
+import json
 import logging
 import requests
 import urllib.parse
@@ -25,7 +26,7 @@ def _is_chinese(text: str) -> bool:
 
 
 def _simplytranslate(text: str) -> str:
-    """SimplyTranslate — 底层是 Google Translate，国内可用"""
+    """SimplyTranslate — Google Translate 代理，国内可用"""
     try:
         encoded = urllib.parse.quote(text[:_MAX_CHUNK])
         resp = requests.get(
@@ -43,9 +44,9 @@ def _simplytranslate(text: str) -> str:
 
 
 def _jina_translate(text: str) -> str:
-    """jina.ai 翻译 — 用 LLM 做翻译，免费"""
+    """jina.ai LLM 翻译，免费"""
     try:
-        prompt = f"Translate to Chinese. Output ONLY the translation, nothing else:\n{text[:400]}"
+        prompt = f"Translate to Chinese. Output ONLY the translation:\n{text[:400]}"
         encoded = urllib.parse.quote(prompt)
         resp = requests.get(
             f"https://s.jina.ai/{encoded}",
@@ -85,8 +86,26 @@ def _youdao_translate(text: str) -> str:
     return ""
 
 
+def _mymemory_translate(text: str) -> str:
+    """MyMemory 翻译 — 第四备用"""
+    try:
+        encoded = urllib.parse.quote(text[:500])
+        resp = requests.get(
+            f"https://api.mymemory.translated.net/get?q={encoded}&langpair=en|zh-CN",
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            result = data.get("responseData", {}).get("translatedText", "")
+            if result and result.lower() != text.lower():
+                return result
+    except Exception:
+        pass
+    return ""
+
+
 def _translate_chunk(text: str) -> str:
-    """翻译单个chunk — 3引擎并行竞争，取最快结果"""
+    """翻译单个chunk — 4引擎并行竞争，取最快结果"""
     if not text or len(text.strip()) < 3:
         return text
 
@@ -97,20 +116,20 @@ def _translate_chunk(text: str) -> str:
     if text in _cache:
         return _cache[text]
 
-    # 3引擎并行竞争
+    # 4引擎并行竞争
     translated = ""
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {
             pool.submit(_simplytranslate, text): 'simply',
             pool.submit(_jina_translate, text): 'jina',
             pool.submit(_youdao_translate, text): 'youdao',
+            pool.submit(_mymemory_translate, text): 'mymemory',
         }
         for future in as_completed(futures, timeout=8):
             try:
                 result = future.result()
                 if result and result != text:
                     translated = result
-                    # 取到第一个就取消其他的
                     for f in futures:
                         f.cancel()
                     break
@@ -133,13 +152,11 @@ def translate_to_zh(text: str) -> str:
     if _is_chinese(text):
         return text
 
-    # 按双换行分割段落
     paragraphs = text.split('\n\n')
 
     if len(text) <= _MAX_CHUNK:
         return _translate_chunk(text)
 
-    # 长文本：分段翻译
     translated_parts = []
     for para in paragraphs:
         para = para.strip()
@@ -152,7 +169,6 @@ def translate_to_zh(text: str) -> str:
         if len(para) <= _MAX_CHUNK:
             translated_parts.append(_translate_chunk(para))
         else:
-            # 超长段落按句子分割
             sentences = re.split(r'(?<=[.!?。！？])\s+', para)
             chunk = ''
             for sent in sentences:
@@ -180,7 +196,6 @@ def _translate_single_item(item: dict) -> dict:
             item['title_en'] = title
 
     if content and not _is_chinese(content):
-        # 内容摘要翻译（前800字符）
         summary = content[:800]
         new_content = translate_to_zh(summary)
         if new_content != summary:
@@ -191,11 +206,7 @@ def _translate_single_item(item: dict) -> dict:
 
 
 def translate_news_items(items: list, source_filter: str = '') -> list:
-    """
-    并发批量翻译新闻标题和内容为中文
-    只翻译非中文内容，中文源自动跳过
-    不再限制只翻译 international — 所有含英文的新闻都翻译
-    """
+    """并发批量翻译新闻标题和内容为中文"""
     to_translate = []
     for item in items:
         if source_filter and source_filter.lower() not in item.get('source', '').lower():
@@ -211,7 +222,6 @@ def translate_news_items(items: list, source_filter: str = '') -> list:
     if not to_translate:
         return items
 
-    # 并发翻译，每条新闻用一个线程
     executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix='translate')
     translated_count = 0
     futures = {executor.submit(_translate_single_item, item): item for item in to_translate}
