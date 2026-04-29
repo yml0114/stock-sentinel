@@ -246,6 +246,30 @@ def _try_12ft(url: str) -> dict:
     }
 
 
+def _try_jina_reader(url: str) -> dict:
+    """策略: jina.ai Reader — 免费全文提取，绕过付费墙，中国可用"""
+    jina_url = f"https://r.jina.ai/{url}"
+    req = urllib.request.Request(jina_url, headers={
+        'User-Agent': _HEADERS['User-Agent'],
+        'Accept': 'text/plain',
+    })
+    resp = urllib.request.urlopen(req, timeout=15)
+    text = resp.read().decode('utf-8', errors='ignore')
+    # jina.ai 返回纯文本，第一行通常是标题
+    lines = text.strip().split('\n')
+    title = lines[0].strip() if lines else ''
+    content = '\n'.join(lines[1:]).strip()
+    # 去掉 jina 的元数据行
+    content = re.sub(r'^Title:.*\n?', '', content, count=1)
+    content = re.sub(r'^URL Source:.*\n?', '', content, count=1)
+    content = re.sub(r'^Markdown Content:.*\n?', '', content, count=1)
+    return {
+        'title': title,
+        'text': content,
+        'length': len(content),
+    }
+
+
 def _try_archive(url: str) -> dict:
     """策略4: archive.today"""
     archive_url = f"https://archive.ph/newest/{url}"
@@ -313,10 +337,10 @@ def extract_article(url: str) -> dict:
         except Exception as e:
             logger.debug(f"华尔街见闻API失败: {e}")
 
-    # 按策略链逐个尝试
+    # 按策略链逐个尝试（jina.ai优先，免费且能绕过付费墙）
     strategies = [
+        ('Jina Reader', _try_jina_reader),
         ('直接抓取', _try_direct),
-        ('Google Cache', _try_google_cache),
         ('12ft.io', _try_12ft),
         ('Archive', _try_archive),
     ]

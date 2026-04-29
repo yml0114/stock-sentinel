@@ -63,7 +63,7 @@ def _load_from_disk(path: str) -> list[dict] | None:
 
 
 def _do_fetch_raw():
-    """后台抓取原始新闻"""
+    """后台抓取原始新闻（确保翻译完成后再保存）"""
     global _raw_cache, _raw_ts, _fetching_raw
     if _fetching_raw:
         return
@@ -72,6 +72,15 @@ def _do_fetch_raw():
         logger.info("🔄 后台抓取新闻(原始)...")
         items = fetch_all_raw()
         if items:
+            # 确保英文标题已翻译（缓存中必须是中文）
+            from app.data.translator import translate_news_items, _is_chinese
+            untranslated = [i for i in items 
+                          if i.get('source_type') == 'international' 
+                          and i.get('title') 
+                          and not _is_chinese(i['title'])]
+            if untranslated:
+                logger.info(f"🔤 补充翻译 {len(untranslated)} 条未翻译标题...")
+                translate_news_items(untranslated)
             _raw_cache = items
             _raw_ts = time.time()
             _save_to_disk(items, _RAW_CACHE_PATH)

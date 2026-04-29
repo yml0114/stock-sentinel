@@ -191,8 +191,8 @@ class ApiService {
 
   // ── 文章正文抓取 ──
 
-  Future<Map<String, dynamic>> getArticle(String url) async {
-    final res = await _dio.get('/article', queryParameters: {'url': url},
+  Future<Map<String, dynamic>> getArticle(String url, {bool translate = true}) async {
+    final res = await _dio.get('/article', queryParameters: {'url': url, 'translate': translate},
       options: Options(receiveTimeout: const Duration(seconds: 20)));
     return _extract(res) as Map<String, dynamic>;
   }

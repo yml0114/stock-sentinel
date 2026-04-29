@@ -1,19 +1,20 @@
 """
-翻译模块 — Google Translate被墙，改用有道翻译
-有道翻译：免费、无需Key、从腾讯云可访问
-备用：搜狗翻译、MyMemory
+翻译模块 — SimplyTranslate (Google Translate代理) 为主
+SimplyTranslate 从国内服务器可用，底层就是 Google Translate
+备用：jina.ai LLM翻译、有道
 """
 import re
 import json
 import logging
 import requests
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
-# 翻译缓存
+# 翻译缓存（内存）
 _cache: dict[str, str] = {}
-_CACHE_MAX = 1000
+_CACHE_MAX = 2000
 
 # 并发翻译线程池
 _executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix='translate')
@@ -26,8 +27,48 @@ def _is_chinese(text: str) -> bool:
     return chinese_chars / max(len(text), 1) > 0.3
 
 
+def _simplytranslate(text: str) -> str:
+    """SimplyTranslate — 底层是 Google Translate，国内可用"""
+    try:
+        encoded = urllib.parse.quote(text[:500])
+        resp = requests.get(
+            f"https://simplytranslate.org/api/translate?from=en&to=zh&text={encoded}",
+            timeout=8,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            result = data.get("translated_text", "")
+            if result:
+                return result
+    except Exception as e:
+        logger.debug(f"SimplyTranslate失败: {e}")
+    return ""
+
+
+def _jina_translate(text: str) -> str:
+    """jina.ai 翻译 — 用 LLM 做翻译，免费"""
+    try:
+        prompt = f"Translate to Chinese. Output ONLY the translation, nothing else:\n{text[:400]}"
+        encoded = urllib.parse.quote(prompt)
+        resp = requests.get(
+            f"https://s.jina.ai/{encoded}",
+            headers={"Accept": "text/plain"},
+            timeout=12,
+        )
+        if resp.status_code == 200:
+            result = resp.text.strip()
+            # 去掉可能的引号和前缀
+            result = re.sub(r'^["\']|["\']$', '', result)
+            result = re.sub(r'^(Translation|翻译)[：:]\s*', '', result)
+            if result and result != text:
+                return result
+    except Exception as e:
+        logger.debug(f"jina翻译失败: {e}")
+    return ""
+
+
 def _youdao_translate(text: str) -> str:
-    """有道翻译 — 免费、无需Key"""
+    """有道翻译 — 备用"""
     try:
         resp = requests.post(
             "https://fanyi.youdao.com/translate",
@@ -48,44 +89,10 @@ def _youdao_translate(text: str) -> str:
     return ""
 
 
-def _sogou_translate(text: str) -> str:
-    """搜狗翻译 — 免费、无需Key"""
-    try:
-        resp = requests.post(
-            "https://fanyi.sogou.com/texttranslate",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={"from": "auto", "to": "zh", "text": text[:500]},
-            timeout=5,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            items = data.get("data", [])
-            return "".join(item.get("dst", "") for item in items)
-    except Exception as e:
-        logger.debug(f"搜狗翻译失败: {e}")
-    return ""
-
-
-def _mymemory_translate(text: str) -> str:
-    """MyMemory翻译 — 免费、无需Key"""
-    try:
-        resp = requests.get(
-            "https://api.mymemory.translated.net/get",
-            params={"q": text[:500], "langpair": "en|zh-CN"},
-            timeout=5,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            return data.get("responseData", {}).get("translatedText", "")
-    except Exception as e:
-        logger.debug(f"MyMemory翻译失败: {e}")
-    return ""
-
-
 def translate_to_zh(text: str) -> str:
     """
-    翻译英文/其他语言 → 中文（简体）
-    优先有道 → 搜狗 → MyMemory，全部免费无需Key
+    翻译英文 → 中文
+    SimplyTranslate (Google) → jina.ai → 有道
     """
     if not text or len(text.strip()) < 3:
         return text
@@ -97,12 +104,12 @@ def translate_to_zh(text: str) -> str:
     if text in _cache:
         return _cache[text]
 
-    # 依次尝试三个翻译服务
-    translated = _youdao_translate(text)
+    # 依次尝试
+    translated = _simplytranslate(text)
     if not translated:
-        translated = _sogou_translate(text)
+        translated = _jina_translate(text)
     if not translated:
-        translated = _mymemory_translate(text)
+        translated = _youdao_translate(text)
 
     if translated and translated != text:
         if len(_cache) < _CACHE_MAX:
@@ -124,7 +131,7 @@ def _translate_single_item(item: dict) -> dict:
             item['title_en'] = title
 
     if content and not _is_chinese(content):
-        summary = content[:200]
+        summary = content[:300]
         new_content = translate_to_zh(summary)
         if new_content != summary:
             item['content'] = new_content
@@ -137,16 +144,13 @@ def translate_news_items(items: list, source_filter: str = '') -> list:
     """
     并发批量翻译新闻标题和内容为中文
     只翻译非中文内容，中文源自动跳过
-    最多翻译 max_translate 条，8线程并发
     """
-    # 先过滤出需要翻译的目标
     to_translate = []
     for item in items:
         if source_filter and source_filter.lower() not in item.get('source', '').lower():
             continue
         title = item.get('title', '')
         content = item.get('content', '')
-        # 只要标题或内容不是中文就需要翻译
         if (title and not _is_chinese(title)) or (content and not _is_chinese(content)):
             to_translate.append(item)
 
@@ -157,12 +161,11 @@ def translate_news_items(items: list, source_filter: str = '') -> list:
     if not to_translate:
         return items
 
-    # 并发翻译
     translated_count = 0
     futures = {_executor.submit(_translate_single_item, item): item for item in to_translate}
-    for future in as_completed(futures, timeout=30):
+    for future in as_completed(futures, timeout=60):
         try:
-            future.result(timeout=10)
+            future.result(timeout=15)
             translated_count += 1
         except Exception as e:
             logger.debug(f"翻译单条失败: {e}")
