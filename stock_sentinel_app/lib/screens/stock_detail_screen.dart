@@ -249,7 +249,11 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
 
                     // 技术指标快照
                     if (indicators.isNotEmpty) ...[
-                      Text('📊 技术指标', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.8))),
+                      Row(children: [
+                        Icon(Icons.show_chart, size: 16, color: Color(0xFF4A90D9)),
+                        SizedBox(width: 6),
+                        Text('技术指标', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.8))),
+                      ]),
                       const SizedBox(height: 6),
                       Wrap(
                         spacing: 8,
@@ -267,7 +271,11 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
 
                     // 信号
                     if (signals.isNotEmpty) ...[
-                      Text('⚡ 技术信号', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.8))),
+                      Row(children: [
+                        Icon(Icons.bolt, size: 16, color: Color(0xFFF97316)),
+                        SizedBox(width: 6),
+                        Text('技术信号', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.8))),
+                      ]),
                       const SizedBox(height: 6),
                       ...signals.map((s) => Padding(
                         padding: const EdgeInsets.only(bottom: 4),
@@ -290,7 +298,11 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
 
                     // K线形态
                     if (patterns.isNotEmpty) ...[
-                      Text('🕯️ K线形态', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.8))),
+                      Row(children: [
+                        Icon(Icons.candlestick_chart, size: 16, color: Color(0xFFF97316)),
+                        SizedBox(width: 6),
+                        Text('K线形态', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.8))),
+                      ]),
                       const SizedBox(height: 6),
                       ...patterns.map((p) => Padding(
                         padding: const EdgeInsets.only(bottom: 4, left: 8),
@@ -300,7 +312,11 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
                     ],
 
                     // AI分析
-                    Text('🤖 AI 综合研判', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.8))),
+                    Row(children: [
+                        Icon(Icons.auto_awesome, size: 16, color: Color(0xFF4A90D9)),
+                        SizedBox(width: 6),
+                        Text('AI 综合研判', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.8))),
+                      ]),
                     const SizedBox(height: 6),
                     ...aiAnalysis.split('\n').map((line) => Padding(
                       padding: const EdgeInsets.only(bottom: 2),
@@ -741,7 +757,11 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
         children: [
           Row(
             children: [
-              const Text('📊 技术面', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              Row(children: [
+                Icon(Icons.show_chart, size: 18, color: Color(0xFF4A90D9)),
+                SizedBox(width: 6),
+                const Text('技术面', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+              ]),
               const Spacer(),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),

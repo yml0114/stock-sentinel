@@ -1,7 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 
-/// 专业K线图组件 v2 — 单指拖动十字光标 + 双指缩放 + 按钮缩放
+/// 专业K线图组件 v4 — Listener手势（绕过ListView抢占）
 class ProfessionalKlineChart extends StatefulWidget {
   final List<Map<String, dynamic>> data;
   final String currencySymbol;
@@ -18,11 +18,9 @@ class ProfessionalKlineChart extends StatefulWidget {
 
 class _ProfessionalKlineChartState extends State<ProfessionalKlineChart> {
   double _scale = 1.0;
-  double _offset = 0;
   int? _crosshairIndex;
   Offset? _crosshairPos;
-  double _baseScale = 1.0;
-  bool _isDragging = false;
+  bool _showCrosshair = false;
 
   @override
   Widget build(BuildContext context) {
@@ -37,70 +35,41 @@ class _ProfessionalKlineChartState extends State<ProfessionalKlineChart> {
 
     return Column(
       children: [
-        // 十字光标信息栏
         _buildCrosshairInfo(),
-        // K线主图
         SizedBox(
           height: 300,
-          child: ClipRect(
-            child: GestureDetector(
-              // ━━ 单指拖动 = 十字光标跟随 ━━
-              onHorizontalDragStart: (details) {
-                _isDragging = true;
-                _updateCrosshair(details.localPosition);
+          child: Listener(
+            // Listener 不参与手势竞技场
+            onPointerDown: (e) {
+              _showCrosshair = true;
+              _updateCrosshair(e.localPosition);
+              setState(() {});
+            },
+            onPointerMove: (e) {
+              if (_showCrosshair) {
+                _updateCrosshair(e.localPosition);
                 setState(() {});
-              },
-              onHorizontalDragUpdate: (details) {
-                if (_isDragging) {
-                  _updateCrosshair(details.localPosition);
-                  setState(() {});
-                }
-              },
-              onHorizontalDragEnd: (_) {
-                _isDragging = false;
-                Future.delayed(const Duration(milliseconds: 800), () {
-                  if (!_isDragging && mounted) {
+              }
+            },
+            onPointerUp: (e) {
+              if (_showCrosshair) {
+                Future.delayed(const Duration(milliseconds: 1200), () {
+                  if (_showCrosshair && mounted) {
+                    _showCrosshair = false;
                     setState(() {
                       _crosshairIndex = null;
                       _crosshairPos = null;
                     });
                   }
                 });
-              },
-              // ━━ 长按十字光标 ━━
-              onLongPressStart: (details) {
-                _isDragging = true;
-                _updateCrosshair(details.localPosition);
-                setState(() {});
-              },
-              onLongPressMoveUpdate: (details) {
-                _updateCrosshair(details.localPosition);
-                setState(() {});
-              },
-              onLongPressEnd: (_) {
-                _isDragging = false;
-                setState(() {
-                  _crosshairIndex = null;
-                  _crosshairPos = null;
-                });
-              },
-              // ━━ 双指缩放 ━━
-              onScaleStart: (details) {
-                _baseScale = _scale;
-              },
-              onScaleUpdate: (details) {
-                if (details.pointerCount >= 2) {
-                  setState(() {
-                    _scale = (_baseScale * details.scale).clamp(0.5, 5.0);
-                  });
-                }
-              },
+              }
+            },
+            child: ClipRect(
               child: CustomPaint(
                 size: const Size(double.infinity, 300),
                 painter: _KlinePainter(
                   data: widget.data,
                   scale: _scale,
-                  offset: _offset,
                   crosshairIndex: _crosshairIndex,
                   crosshairPos: _crosshairPos,
                   currencySymbol: widget.currencySymbol,
@@ -109,40 +78,24 @@ class _ProfessionalKlineChartState extends State<ProfessionalKlineChart> {
             ),
           ),
         ),
-        // 缩放控制栏
+        // 缩放按钮
         Padding(
           padding: const EdgeInsets.only(top: 4),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              GestureDetector(
-                onTap: () => setState(() => _scale = (_scale * 0.8).clamp(0.5, 5.0)),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.06),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text('−', style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 18)),
+              _scaleBtn('−', () => setState(() => _scale = (_scale * 0.8).clamp(0.5, 5.0))),
+              const SizedBox(width: 8),
+              Text('${(_scale * 100).round()}%', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 11)),
+              const SizedBox(width: 8),
+              _scaleBtn('+', () => setState(() => _scale = (_scale * 1.25).clamp(0.5, 5.0))),
+              if (_scale != 1.0) ...[
+                const SizedBox(width: 12),
+                GestureDetector(
+                  onTap: () => setState(() => _scale = 1.0),
+                  child: Text('重置', style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 11)),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                '${(_scale * 100).round()}%',
-                style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 12),
-              ),
-              const SizedBox(width: 12),
-              GestureDetector(
-                onTap: () => setState(() => _scale = (_scale * 1.25).clamp(0.5, 5.0)),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.06),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text('+', style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 18)),
-                ),
-              ),
+              ],
             ],
           ),
         ),
@@ -150,14 +103,27 @@ class _ProfessionalKlineChartState extends State<ProfessionalKlineChart> {
     );
   }
 
+  Widget _scaleBtn(String label, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(label, style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 18)),
+      ),
+    );
+  }
+
   void _updateCrosshair(Offset localPos) {
     final size = context.size;
     if (size == null) return;
-    final chartHeight = size.height * 0.65;
-    if (localPos.dy < 0 || localPos.dy > chartHeight) return;
+    if (localPos.dy < 0 || localPos.dy > size.height * 0.65) return;
 
     final visibleCount = (widget.data.length / _scale).round().clamp(5, widget.data.length);
-    final startX = (widget.data.length - visibleCount - (_offset / 2).round()).clamp(0, widget.data.length - visibleCount);
+    final startX = (widget.data.length - visibleCount).clamp(0, widget.data.length - visibleCount);
     final idx = startX + (localPos.dx / size.width * visibleCount).round();
     if (idx >= 0 && idx < widget.data.length) {
       _crosshairIndex = idx;
@@ -224,7 +190,6 @@ class _ProfessionalKlineChartState extends State<ProfessionalKlineChart> {
 class _KlinePainter extends CustomPainter {
   final List<Map<String, dynamic>> data;
   final double scale;
-  final double offset;
   final int? crosshairIndex;
   final Offset? crosshairPos;
   final String currencySymbol;
@@ -232,7 +197,6 @@ class _KlinePainter extends CustomPainter {
   _KlinePainter({
     required this.data,
     required this.scale,
-    required this.offset,
     this.crosshairIndex,
     this.crosshairPos,
     this.currencySymbol = '¥',
@@ -247,7 +211,7 @@ class _KlinePainter extends CustomPainter {
     final volTop = chartHeight + 4;
 
     final visibleCount = (data.length / scale).round().clamp(5, data.length);
-    final startX = (data.length - visibleCount - (offset / 2).round()).clamp(0, data.length - visibleCount);
+    final startX = (data.length - visibleCount).clamp(0, data.length - visibleCount);
     final endIdx = (startX + visibleCount).clamp(0, data.length);
     final visible = data.sublist(startX, endIdx);
 
@@ -327,7 +291,8 @@ class _KlinePainter extends CustomPainter {
     _drawDateLabels(canvas, size, visible, candleWidth, chartHeight);
 
     if (crosshairIndex != null && crosshairPos != null) {
-      _drawCrosshair(canvas, size, chartHeight, crosshairIndex! - startX, candleWidth, minPrice, maxPrice, visible);
+      final localIdx = crosshairIndex! - startX;
+      _drawCrosshair(canvas, size, chartHeight, localIdx, candleWidth, minPrice, maxPrice, visible);
     }
   }
 
@@ -423,6 +388,6 @@ class _KlinePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _KlinePainter oldDelegate) {
-    return oldDelegate.data != data || oldDelegate.scale != scale || oldDelegate.offset != offset || oldDelegate.crosshairIndex != crosshairIndex;
+    return oldDelegate.data != data || oldDelegate.scale != scale || oldDelegate.crosshairIndex != crosshairIndex;
   }
 }

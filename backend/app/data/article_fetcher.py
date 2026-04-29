@@ -105,6 +105,22 @@ def _clean_text(text: str) -> str:
                 continue
         cleaned.append(line)
 
+    # 段落级去重（财新等付费墙预览内容经常重复段落）
+    seen = set()
+    deduped = []
+    for line in cleaned:
+        s = line.strip()
+        if not s:
+            deduped.append(line)
+            continue
+        # 用前60字符做去重key（避免逐字比较太慢）
+        key = s[:60]
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(line)
+    cleaned = deduped
+
     # 找正文开始（第一条超过40字的行）
     body_start = 0
     for i, line in enumerate(cleaned):
