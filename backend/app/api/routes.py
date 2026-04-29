@@ -21,6 +21,7 @@ from app.data.stock_data import (
     get_batch_quotes, get_realtime_quote, search_stocks, get_kline_data, detect_market,
 )
 from app.data.news_intel import fetch_all_news, fetch_all_raw
+from app.news_cache import get_raw_news, get_filtered_news, refresh_news_background, cache_stats
 from app.data.research_intel import (
     get_stock_reports, get_analyst_ranking, get_stock_comment,
     get_stock_full_profile, format_profile_for_ai,
@@ -124,7 +125,10 @@ async def api_send_code(body: PhoneLogin):
     """发送手机验证码"""
     result = send_code(body.phone)
     if result["success"]:
-        return {"code": 0, "data": {"message": result["message"]}}
+        data = {"message": result["message"]}
+        if "code" in result:
+            data["code"] = result["code"]
+        return {"code": 0, "data": data}
     return {"code": 400, "message": result["message"]}
 
 
@@ -302,13 +306,7 @@ async def api_get_events(
     return {"code": 0, "data": [_event_to_api(e) for e in events]}
 
 
-# ── 全球新闻（不过滤，公共数据）──
-
-# 新闻缓存（避免每次请求都抓14+秒）
-import time as _time
-_news_cache = {'data': None, 'ts': 0, 'raw': None, 'raw_ts': 0}
-_CACHE_TTL = 180  # 3分钟缓存
-
+# ── 全球新闻（过滤后）──
 
 @router.get("/news")
 async def api_get_news(limit: int = Query(50, ge=1, le=200)):
@@ -316,7 +314,7 @@ async def api_get_news(limit: int = Query(50, ge=1, le=200)):
     return {"code": 0, "data": [_event_to_api(e) for e in events]}
 
 
-# ── 全球新闻流（原始，含全部源，带缓存）──
+# ── 全球新闻流（原始，含全部源，带持久化缓存）──
 
 def _format_news_item(item):
     entry = {
@@ -327,7 +325,6 @@ def _format_news_item(item):
         "time": item.get("time", ""),
         "url": item.get("url", ""),
     }
-    # 同时输出两种字段名，兼容前端
     if item.get("title_en"):
         entry["title_en"] = item["title_en"]
         entry["titleEn"] = item["title_en"]
@@ -339,39 +336,36 @@ def _format_news_item(item):
 
 @router.get("/news/raw")
 async def api_get_news_raw(limit: int = Query(80, ge=1, le=500)):
-    """获取全部新闻源原始数据（带3分钟缓存）"""
-    now = _time.time()
-    if _news_cache['raw'] and now - _news_cache['raw_ts'] < _CACHE_TTL:
-        return {"code": 0, "data": _news_cache['raw'][:limit]}
-    # 缓存过期，用executor跑同步抓取，不阻塞事件循环
+    """获取全部新闻源原始数据（持久化缓存，秒返回）"""
     loop = asyncio.get_event_loop()
-    items = await loop.run_in_executor(None, fetch_all_raw)
+    items = await loop.run_in_executor(None, get_raw_news, limit)
     result = [_format_news_item(item) for item in items]
-    _news_cache['raw'] = result
-    _news_cache['raw_ts'] = now
-    return {"code": 0, "data": result[:limit]}
+    return {"code": 0, "data": result}
 
 
 # ── 全球新闻（智能去重+过滤后）──
 
 @router.get("/news/filtered")
 async def api_get_news_filtered():
-    """获取智能去重+关键词过滤后的新闻（带3分钟缓存）"""
-    now = _time.time()
-    if _news_cache['data'] and now - _news_cache['ts'] < _CACHE_TTL:
-        return {"code": 0, "data": _news_cache['data']}
+    """获取智能去重+关键词过滤后的新闻（持久化缓存）"""
     loop = asyncio.get_event_loop()
-    filtered = await loop.run_in_executor(None, fetch_all_news)
+    items = await loop.run_in_executor(None, get_filtered_news)
     result = []
-    for item in filtered[:100]:
+    for item in items[:100]:
         entry = _format_news_item(item)
         entry["matchedKeywords"] = item.get("matched_keywords", [])
         entry["relatedSectors"] = item.get("related_sectors", [])
         entry["severity"] = item.get("severity", "info")
         result.append(entry)
-    _news_cache['data'] = result
-    _news_cache['ts'] = now
     return {"code": 0, "data": result}
+
+
+# ── 缓存状态（调试用）──
+
+@router.get("/news/cache-stats")
+async def api_get_news_cache_stats():
+    """查看新闻缓存状态"""
+    return {"code": 0, "data": cache_stats()}
 
 
 # ── 文章正文抓取 ──

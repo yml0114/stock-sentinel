@@ -35,31 +35,19 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Stock Sentinel 启动中...")
     await init_db()
     start_scheduler()
-    # 预加载新闻缓存（后台线程，不阻塞启动）
-    import threading
-    def _preload_news():
-        try:
-            from app.api.routes import _news_cache, _CACHE_TTL, _format_news_item
-            from app.data.news_intel import fetch_all_raw, fetch_all_news
-            import time as _time
-            logger.info("📰 预加载新闻缓存...")
-            raw_items = fetch_all_raw()
-            _news_cache['raw'] = [_format_news_item(i) for i in raw_items]
-            _news_cache['raw_ts'] = _time.time()
-            filtered = fetch_all_news()
-            result = []
-            for item in filtered[:100]:
-                entry = _format_news_item(item)
-                entry["matchedKeywords"] = item.get("matched_keywords", [])
-                entry["relatedSectors"] = item.get("related_sectors", [])
-                entry["severity"] = item.get("severity", "info")
-                result.append(entry)
-            _news_cache['data'] = result
-            _news_cache['ts'] = _time.time()
-            logger.info(f"📰 新闻缓存就绪: {len(_news_cache['raw'])}条原始, {len(result)}条过滤")
-        except Exception as e:
-            logger.warning(f"📰 新闻缓存预加载失败: {e}")
-    threading.Thread(target=_preload_news, daemon=True).start()
+    # 后台预加载新闻缓存（持久化磁盘 + 内存，不阻塞启动）
+    from app.news_cache import refresh_news_background, _load_from_disk, _RAW_CACHE_PATH, _FILTERED_CACHE_PATH
+    import app.news_cache as nc
+    # 先加载磁盘缓存（秒级）
+    disk_raw = _load_from_disk(_RAW_CACHE_PATH)
+    if disk_raw:
+        nc._raw_cache = disk_raw
+    disk_filtered = _load_from_disk(_FILTERED_CACHE_PATH)
+    if disk_filtered:
+        nc._filtered_cache = disk_filtered
+    logger.info(f"📰 磁盘缓存加载: {len(nc._raw_cache)}条原始, {len(nc._filtered_cache)}条过滤")
+    # 再后台刷新最新数据
+    refresh_news_background()
     logger.info("✅ Stock Sentinel 启动完成")
     yield
     # 关闭

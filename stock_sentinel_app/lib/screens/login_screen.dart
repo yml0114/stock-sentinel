@@ -18,6 +18,7 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _loading = false;
   String _error = '';
   int _countdown = 0;
+  String _devCode = ''; // 开发模式验证码
 
   @override
   void dispose() {
@@ -42,12 +43,18 @@ class _LoginScreenState extends State<LoginScreen> {
       setState(() => _error = '请输入11位手机号');
       return;
     }
-    setState(() { _loading = true; _error = ''; });
+    setState(() { _loading = true; _error = ''; _devCode = ''; });
     try {
       final api = ApiService();
       final result = await api.sendCode(phone);
       if (result['code'] == 0) {
-        setState(() => _codeSent = true);
+        // 服务端会返回验证码（开发模式或ntfy失败时）
+        final data = result['data'] ?? {};
+        final serverCode = data['code'] ?? '';
+        setState(() {
+          _codeSent = true;
+          _devCode = serverCode;
+        });
         _startCountdown();
       } else {
         setState(() => _error = result['message'] ?? '发送失败');
@@ -141,6 +148,59 @@ class _LoginScreenState extends State<LoginScreen> {
 
                 // 验证码输入 + 发送按钮
                 if (_codeSent) ...[
+                  // 验证码提示卡片
+                  if (_devCode.isNotEmpty) ...[
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(14),
+                      margin: const EdgeInsets.only(bottom: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF4A90D9).withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFF4A90D9).withOpacity(0.3)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.info_outline, color: Color(0xFF4A90D9), size: 20),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('您的验证码', style: TextStyle(color: Color(0xFF4A90D9), fontSize: 12)),
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    Text(_devCode, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: 6)),
+                                    const SizedBox(width: 12),
+                                    GestureDetector(
+                                      onTap: () {
+                                        Clipboard.setData(ClipboardData(text: _devCode));
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          const SnackBar(content: Text('已复制'), duration: Duration(seconds: 1)),
+                                        );
+                                        // 自动填入
+                                        _codeController.text = _devCode;
+                                        setState(() {});
+                                      },
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF4A90D9).withOpacity(0.2),
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: const Text('复制', style: TextStyle(color: Color(0xFF4A90D9), fontSize: 12)),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                   Row(
                     children: [
                       Expanded(

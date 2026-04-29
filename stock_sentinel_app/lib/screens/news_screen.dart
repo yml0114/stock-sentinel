@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/api_service.dart';
+import '../services/news_service.dart';
 
 class NewsScreen extends StatefulWidget {
   const NewsScreen({super.key});
@@ -10,39 +11,49 @@ class NewsScreen extends StatefulWidget {
 }
 
 class _NewsScreenState extends State<NewsScreen> {
+  final _newsService = NewsService();
   final _api = ApiService();
-  List<Map<String, dynamic>> _news = [];
-  bool _loading = true;
+  bool _loading = false;
   String _filter = 'all';
 
   @override
   void initState() {
     super.initState();
-    _loadNews();
+    _newsService.addListener(_onNewsUpdate);
+    if (!_newsService.isLoaded) {
+      setState(() => _loading = true);
+    }
+    _newsService.init().then((_) {
+      if (mounted) setState(() => _loading = false);
+    });
   }
 
-  Future<void> _loadNews() async {
+  void _onNewsUpdate() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _newsService.removeListener(_onNewsUpdate);
+    super.dispose();
+  }
+
+  Future<void> _manualRefresh() async {
     setState(() => _loading = true);
-    try {
-      final data = await _api.getNewsRaw(limit: 200);
-      if (mounted) setState(() {
-        _news = data;
-        _loading = false;
-      });
-    } catch (e) {
-      if (mounted) setState(() => _loading = false);
-    }
+    await _newsService.refresh();
+    if (mounted) setState(() => _loading = false);
   }
 
   List<Map<String, dynamic>> get _filteredNews {
-    if (_filter == 'all') return _news;
+    final news = _newsService.news;
+    if (_filter == 'all') return news;
     if (_filter == 'bloomberg') {
-      return _news.where((n) => n['source'] == 'Bloomberg' || n['source'] == '财新').toList();
+      return news.where((n) => n['source'] == 'Bloomberg' || n['source'] == '财新').toList();
     }
     if (_filter == 'international') {
-      return _news.where((n) => n['sourceType'] == 'international').toList();
+      return news.where((n) => n['sourceType'] == 'international').toList();
     }
-    return _news.where((n) => n['sourceType'] != 'international').toList();
+    return news.where((n) => n['sourceType'] != 'international').toList();
   }
 
   @override
@@ -52,8 +63,10 @@ class _NewsScreenState extends State<NewsScreen> {
         title: const Text('全球新闻'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadNews,
+            icon: _loading
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Icon(Icons.refresh),
+            onPressed: _loading ? null : _manualRefresh,
           ),
         ],
       ),
@@ -61,10 +74,10 @@ class _NewsScreenState extends State<NewsScreen> {
         children: [
           _buildFilterBar(),
           Expanded(
-            child: _loading
+            child: _loading && _newsService.news.isEmpty
                 ? const Center(child: CircularProgressIndicator())
                 : RefreshIndicator(
-                    onRefresh: _loadNews,
+                    onRefresh: _manualRefresh,
                     child: _filteredNews.isEmpty
                         ? Center(
                             child: Text('暂无新闻', style: TextStyle(color: Colors.white.withOpacity(0.4))),
@@ -248,7 +261,6 @@ class _NewsScreenState extends State<NewsScreen> {
             const SizedBox(height: 10),
             Row(
               children: [
-                // 全文按钮（抓取+翻译中文全文，APP内展示）
                 if (hasUrl)
                   _actionButton(
                     icon: Icons.article_outlined,
@@ -257,7 +269,6 @@ class _NewsScreenState extends State<NewsScreen> {
                     onTap: () => _showFullArticle(item),
                   ),
                 if (hasUrl) const SizedBox(width: 8),
-                // 原文按钮（浏览器打开）
                 if (hasUrl)
                   _actionButton(
                     icon: Icons.open_in_browser,
@@ -300,7 +311,6 @@ class _NewsScreenState extends State<NewsScreen> {
     );
   }
 
-  /// 用浏览器打开原文链接
   Future<void> _openOriginalUrl(String url) async {
     final uri = Uri.parse(url);
     if (await canLaunchUrl(uri)) {
@@ -314,7 +324,6 @@ class _NewsScreenState extends State<NewsScreen> {
     }
   }
 
-  /// 展示全文（抓取+翻译中文）— APP内弹出
   void _showFullArticle(Map<String, dynamic> item) {
     final url = item['url'] ?? '';
     showModalBottomSheet(
@@ -368,44 +377,31 @@ class _ArticleSheetState extends State<_ArticleSheet> {
   String _contentEn = '';
   bool _isTranslated = false;
   String _error = '';
-  bool _showOriginal = false; // 是否显示英文原文
+  bool _showOriginal = false;
 
   @override
   void initState() {
     super.initState();
-    // 自动开始抓取全文
     _fetchArticle();
   }
 
   Future<void> _fetchArticle() async {
-    setState(() {
-      _loading = true;
-      _error = '';
-    });
+    setState(() { _loading = true; _error = ''; });
     try {
       final result = await widget.api.getArticle(widget.url);
       if (mounted) setState(() {
         _loading = false;
         _loaded = true;
-        
         final success = result['success'] ?? false;
         if (success || (result['content'] ?? '').toString().isNotEmpty) {
-          // 中文内容
           _titleZh = result['title'] ?? widget.initialTitle;
           _contentZh = result['content'] ?? '';
-          
-          // 英文原文
           _titleEn = result['title_en'] ?? '';
           _contentEn = result['content_en'] ?? '';
           _isTranslated = result['isTranslated'] ?? false;
-          
-          // 如果没有抓到正文，用列表的摘要
-          if (_contentZh.isEmpty) {
-            _contentZh = widget.initialContent;
-          }
+          if (_contentZh.isEmpty) _contentZh = widget.initialContent;
         } else {
           _error = result['error'] ?? '无法获取正文';
-          // 降级：用列表摘要
           _titleZh = widget.initialTitle;
           _contentZh = widget.initialContent;
         }
@@ -471,18 +467,10 @@ class _ArticleSheetState extends State<_ArticleSheet> {
                 ),
               ),
             ] else ...[
-              // 标题
               Text(
                 _showOriginal && _titleEn.isNotEmpty ? _titleEn : _titleZh,
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                  height: 1.4,
-                ),
+                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white, height: 1.4),
               ),
-
-              // 翻译标记
               if (_isTranslated) ...[
                 const SizedBox(height: 8),
                 Container(
@@ -491,11 +479,9 @@ class _ArticleSheetState extends State<_ArticleSheet> {
                     color: Colors.green.withOpacity(0.15),
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: const Text('AI翻译 · Google Translate', style: TextStyle(color: Colors.green, fontSize: 11)),
+                  child: const Text('已翻译', style: TextStyle(color: Colors.green, fontSize: 11)),
                 ),
               ],
-
-              // 错误提示
               if (_error.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Container(
@@ -507,19 +493,12 @@ class _ArticleSheetState extends State<_ArticleSheet> {
                   child: Text(_error, style: TextStyle(color: Colors.orange.withOpacity(0.8), fontSize: 12)),
                 ),
               ],
-
               const SizedBox(height: 16),
               Divider(color: Colors.white.withOpacity(0.1)),
               const SizedBox(height: 16),
-
-              // 正文（中文或英文，取决于 _showOriginal）
               Text(
                 _showOriginal && _contentEn.isNotEmpty ? _contentEn : _contentZh,
-                style: TextStyle(
-                  fontSize: 15,
-                  color: Colors.white.withOpacity(0.85),
-                  height: 1.7,
-                ),
+                style: TextStyle(fontSize: 15, color: Colors.white.withOpacity(0.85), height: 1.7),
               ),
             ],
 
@@ -527,10 +506,8 @@ class _ArticleSheetState extends State<_ArticleSheet> {
             const SizedBox(height: 24),
             Divider(color: Colors.white.withOpacity(0.08)),
             const SizedBox(height: 12),
-
             Row(
               children: [
-                // 切换中文/英文按钮（如果有翻译）
                 if (_isTranslated && _contentEn.isNotEmpty)
                   Expanded(
                     child: GestureDetector(
@@ -557,8 +534,6 @@ class _ArticleSheetState extends State<_ArticleSheet> {
                     ),
                   ),
                 if (_isTranslated && _contentEn.isNotEmpty) const SizedBox(width: 12),
-
-                // 浏览器打开原文按钮
                 Expanded(
                   child: GestureDetector(
                     onTap: _openOriginalUrl,
