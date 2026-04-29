@@ -2,6 +2,7 @@
 FastAPI 路由 — 对外API统一用camelCase，匹配Flutter前端
 v3: 多市场支持(A股/港股/美股) + 专业K线
 """
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -230,8 +231,9 @@ async def api_get_news_raw(limit: int = Query(80, ge=1, le=500)):
     now = _time.time()
     if _news_cache['raw'] and now - _news_cache['raw_ts'] < _CACHE_TTL:
         return {"code": 0, "data": _news_cache['raw'][:limit]}
-    # 缓存过期，重新抓取
-    items = fetch_all_raw()
+    # 缓存过期，用executor跑同步抓取，不阻塞事件循环
+    loop = asyncio.get_event_loop()
+    items = await loop.run_in_executor(None, fetch_all_raw)
     result = [_format_news_item(item) for item in items]
     _news_cache['raw'] = result
     _news_cache['raw_ts'] = now
@@ -246,7 +248,8 @@ async def api_get_news_filtered():
     now = _time.time()
     if _news_cache['data'] and now - _news_cache['ts'] < _CACHE_TTL:
         return {"code": 0, "data": _news_cache['data']}
-    filtered = fetch_all_news()
+    loop = asyncio.get_event_loop()
+    filtered = await loop.run_in_executor(None, fetch_all_news)
     result = []
     for item in filtered[:100]:
         entry = _format_news_item(item)
