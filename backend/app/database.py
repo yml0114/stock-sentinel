@@ -114,6 +114,24 @@ async def create_user(phone: str, nickname: str = "") -> dict:
         # 更新最后登录
         await db.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, user_id))
         await db.commit()
+
+        # ── 自动迁移匿名数据到此用户 ──
+        try:
+            # 迁移匿名自选股
+            await db.execute(
+                "UPDATE watchlist SET user_id = ? WHERE user_id = 0 AND stock_code NOT IN "
+                "(SELECT stock_code FROM watchlist WHERE user_id = ?)",
+                (user_id, user_id)
+            )
+            # 迁移匿名事件
+            await db.execute(
+                "UPDATE events SET user_id = ? WHERE user_id = 0",
+                (user_id,)
+            )
+            await db.commit()
+        except Exception:
+            pass  # 迁移失败不影响登录
+
         return {"id": user_id, "phone": phone, "nickname": nickname}
     finally:
         await db.close()
@@ -190,15 +208,22 @@ async def remove_watchlist(stock_code: str, user_id: int = 0) -> bool:
 
 
 async def get_watchlist(user_id: int = 0) -> list[dict]:
-    """获取自选股列表"""
+    """获取自选股列表 — 包含匿名(user_id=0) + 用户私有"""
     db = await get_db()
     try:
         cursor = await db.execute(
-            "SELECT * FROM watchlist WHERE user_id = ? ORDER BY added_at DESC",
+            "SELECT * FROM watchlist WHERE user_id = ? OR user_id = 0 ORDER BY added_at DESC",
             (user_id,)
         )
         rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        # 去重：同一stock_code保留更高user_id的
+        seen = {}
+        for row in rows:
+            r = dict(row)
+            code = r['stock_code']
+            if code not in seen or r['user_id'] > seen[code]['user_id']:
+                seen[code] = r
+        return list(seen.values())
     finally:
         await db.close()
 
@@ -222,17 +247,17 @@ async def add_event(stock_code: str, event_type: str, title: str, detail: str,
 
 
 async def get_events(stock_code: str = None, limit: int = 50, user_id: int = 0) -> list[dict]:
-    """查询事件"""
+    """查询事件 — 包含全局事件(user_id=0) + 用户私有事件"""
     db = await get_db()
     try:
         if stock_code:
             cursor = await db.execute(
-                "SELECT * FROM events WHERE stock_code = ? AND user_id = ? ORDER BY created_at DESC LIMIT ?",
+                "SELECT * FROM events WHERE stock_code = ? AND (user_id = ? OR user_id = 0) ORDER BY created_at DESC LIMIT ?",
                 (stock_code, user_id, limit)
             )
         else:
             cursor = await db.execute(
-                "SELECT * FROM events WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                "SELECT * FROM events WHERE (user_id = ? OR user_id = 0) ORDER BY created_at DESC LIMIT ?",
                 (user_id, limit)
             )
         rows = await cursor.fetchall()

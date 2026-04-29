@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 # APScheduler 实例
 scheduler = BackgroundScheduler()
 
+# 事件去重缓存: "stock_code:event_type" → last_trigger_time
+_recent_event_cache: dict = {}
+
 # 线程池用于执行 AI 分析（避免阻塞）
 _executor = ThreadPoolExecutor(max_workers=4)
 
@@ -87,6 +90,19 @@ def poll_realtime():
 
         # 4. 运行检测
         events = run_detection(quotes, announcements_map)
+
+        # 4.5 事件去重 — 同一股票+类型5分钟内不重复记录
+        _EVENT_COOLDOWN_MINUTES = 5
+        deduped_events = []
+        for event in events:
+            key = f"{event['stock_code']}:{event['event_type']}"
+            last_time = _recent_event_cache.get(key)
+            now = datetime.now()
+            if last_time and (now - last_time).total_seconds() < _EVENT_COOLDOWN_MINUTES * 60:
+                continue  # 冷却中，跳过
+            _recent_event_cache[key] = now
+            deduped_events.append(event)
+        events = deduped_events
 
         # 5. 处理每个事件：AI分析 → 存库 → 推送
         for event in events:
