@@ -16,6 +16,16 @@ class ApiService {
       connectTimeout: const Duration(seconds: 10),
       receiveTimeout: const Duration(seconds: 10),
     ));
+
+    // 自动附加Token
+    _dio.interceptors.add(InterceptorsWrapper(
+      onRequest: (options, handler) {
+        if (AppConfig.token != null) {
+          options.headers['Authorization'] = 'Bearer ${AppConfig.token}';
+        }
+        handler.next(options);
+      },
+    ));
   }
 
   dynamic _extract(Response res) {
@@ -24,6 +34,27 @@ class ApiService {
       return body['data'];
     }
     return body;
+  }
+
+  // ── 认证 ──
+
+  Future<Map<String, dynamic>> sendCode(String phone) async {
+    final res = await _dio.post('/auth/send-code', data: {'phone': phone});
+    return res.data as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> login(String phone, String code) async {
+    final res = await _dio.post('/auth/login', data: {'phone': phone, 'code': code});
+    return res.data as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> getMe() async {
+    final res = await _dio.get('/auth/me');
+    return res.data as Map<String, dynamic>;
+  }
+
+  Future<void> updateSettings(Map<String, dynamic> settings) async {
+    await _dio.post('/auth/settings', data: {'settings': settings});
   }
 
   // ── 自选股 ──
@@ -68,7 +99,7 @@ class ApiService {
 
   Future<List<Map<String, dynamic>>> getNewsRaw({int limit = 80}) async {
     final res = await _dio.get('/news/raw', queryParameters: {'limit': limit},
-      options: Options(receiveTimeout: const Duration(seconds: 60))); // 新闻聚合较慢
+      options: Options(receiveTimeout: const Duration(seconds: 60)));
     final data = _extract(res) as List;
     return data.cast<Map<String, dynamic>>();
   }
@@ -147,7 +178,7 @@ class ApiService {
     final params = <String, dynamic>{'period': period, 'days': days};
     if (market.isNotEmpty) params['market'] = market;
     final res = await _dio.get('/diagnose/$code', queryParameters: params,
-      options: Options(receiveTimeout: const Duration(seconds: 60))); // AI分析可能较慢
+      options: Options(receiveTimeout: const Duration(seconds: 60)));
     return _extract(res) as Map<String, dynamic>;
   }
 

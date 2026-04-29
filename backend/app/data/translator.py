@@ -7,12 +7,16 @@ import re
 import json
 import logging
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
 # 翻译缓存
 _cache: dict[str, str] = {}
-_CACHE_MAX = 500
+_CACHE_MAX = 1000
+
+# 并发翻译线程池
+_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix='translate')
 
 
 def _is_chinese(text: str) -> bool:
@@ -108,38 +112,61 @@ def translate_to_zh(text: str) -> str:
     return text
 
 
+def _translate_single_item(item: dict) -> dict:
+    """翻译单条新闻的标题和内容（线程安全）"""
+    title = item.get('title', '')
+    content = item.get('content', '')
+
+    if title and not _is_chinese(title):
+        new_title = translate_to_zh(title)
+        if new_title != title:
+            item['title'] = new_title
+            item['title_en'] = title
+
+    if content and not _is_chinese(content):
+        summary = content[:200]
+        new_content = translate_to_zh(summary)
+        if new_content != summary:
+            item['content'] = new_content
+            item['content_en'] = content
+
+    return item
+
+
 def translate_news_items(items: list, source_filter: str = '') -> list:
     """
-    批量翻译新闻标题和内容为中文
+    并发批量翻译新闻标题和内容为中文
     只翻译非中文内容，中文源自动跳过
+    最多翻译 max_translate 条，8线程并发
     """
-    translated_count = 0
-    max_translate = 15
+    # 先过滤出需要翻译的目标
+    to_translate = []
     for item in items:
-        if translated_count >= max_translate:
-            break
-
-        source = item.get('source', '')
-        if source_filter and source_filter.lower() not in source.lower():
+        if source_filter and source_filter.lower() not in item.get('source', '').lower():
             continue
-
         title = item.get('title', '')
         content = item.get('content', '')
+        # 只要标题或内容不是中文就需要翻译
+        if (title and not _is_chinese(title)) or (content and not _is_chinese(content)):
+            to_translate.append(item)
 
-        if title and not _is_chinese(title):
-            new_title = translate_to_zh(title)
-            if new_title != title:
-                item['title'] = new_title
-                item['title_en'] = title
-                translated_count += 1
+    # 限制最多翻译30条
+    max_translate = 30
+    to_translate = to_translate[:max_translate]
 
-        if content and not _is_chinese(content):
-            summary = content[:200]
-            new_content = translate_to_zh(summary)
-            if new_content != summary:
-                item['content'] = new_content
-                item['content_en'] = content
+    if not to_translate:
+        return items
+
+    # 并发翻译
+    translated_count = 0
+    futures = {_executor.submit(_translate_single_item, item): item for item in to_translate}
+    for future in as_completed(futures, timeout=30):
+        try:
+            future.result(timeout=10)
+            translated_count += 1
+        except Exception as e:
+            logger.debug(f"翻译单条失败: {e}")
 
     if translated_count > 0:
-        logger.info(f"✅ 已翻译 {translated_count} 条新闻为中文")
+        logger.info(f"✅ 并发翻译完成: {translated_count}/{len(to_translate)} 条新闻")
     return items
