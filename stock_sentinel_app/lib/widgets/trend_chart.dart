@@ -1,7 +1,9 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 
-/// 分时走势线组件 v6 — Listener手势（绕过ListView抢占，确定性解决）
+/// 分时走势线组件 v8
+/// 核心：只用 onScale*（不能和 onPan* 共存！）
+/// 单指 = 拖动十字光标，双指 = 缩放，+/− 按钮辅助
 class TrendChart extends StatefulWidget {
   final Map<String, dynamic> trendData;
   final String currencySymbol;
@@ -18,11 +20,9 @@ class TrendChart extends StatefulWidget {
 
 class _TrendChartState extends State<TrendChart> {
   int? _crosshairIndex;
-  Offset? _crosshairPos;
   double _scale = 1.0;
-  bool _showCrosshair = false;
-  // 双指缩放状态
-  double? _initialFingerDistance;
+  double _baseScale = 1.0;
+  bool _active = false;
 
   List<Map<String, dynamic>> get _points {
     final raw = widget.trendData['trend'] as List? ?? [];
@@ -50,33 +50,33 @@ class _TrendChartState extends State<TrendChart> {
         _buildCrosshairInfo(),
         SizedBox(
           height: 250,
-          child: Listener(
-            onPointerDown: (e) {
-              if (!_showCrosshair) {
-                _showCrosshair = true;
-                _updateCrosshair(e.localPosition);
-                setState(() {});
-              }
+          child: GestureDetector(
+            // ✅ 只用 onScale*，单指/双指都走这条路
+            onScaleStart: (details) {
+              _baseScale = _scale;
+              _active = true;
             },
-            onPointerMove: (e) {
-              if (_showCrosshair) {
-                _updateCrosshair(e.localPosition);
-                setState(() {});
+            onScaleUpdate: (details) {
+              if (details.pointerCount == 1) {
+                // 单指 → 拖动十字光标
+                _updateCrosshair(details.localFocalPoint);
+              } else if (details.pointerCount >= 2) {
+                // 双指 → 缩放
+                _scale = (_baseScale * details.scale).clamp(0.5, 3.0);
               }
+              setState(() {});
             },
-            onPointerUp: (e) {
-              if (_showCrosshair) {
-                Future.delayed(const Duration(milliseconds: 1200), () {
-                  if (_showCrosshair && mounted) {
-                    _showCrosshair = false;
-                    setState(() {
-                      _crosshairIndex = null;
-                      _crosshairPos = null;
-                    });
-                  }
-                });
-              }
+            onScaleEnd: (_) {
+              _active = false;
+              Future.delayed(const Duration(milliseconds: 800), () {
+                if (!_active && mounted) {
+                  setState(() {
+                    _crosshairIndex = null;
+                  });
+                }
+              });
             },
+            behavior: HitTestBehavior.opaque,
             child: ClipRect(
               child: CustomPaint(
                 size: const Size(double.infinity, 250),
@@ -85,29 +85,35 @@ class _TrendChartState extends State<TrendChart> {
                   prevClose: _prevClose,
                   currencySymbol: widget.currencySymbol,
                   crosshairIndex: _crosshairIndex,
-                  crosshairPos: _crosshairPos,
                   scale: _scale,
                 ),
               ),
             ),
           ),
         ),
-        // 缩放按钮
+        // 缩放控制栏
         Padding(
           padding: const EdgeInsets.only(top: 4),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              _scaleBtn('−', () => setState(() => _scale = (_scale * 0.75).clamp(0.5, 3.0))),
-              const SizedBox(width: 8),
+              _scaleBtn(Icons.remove, () => setState(() => _scale = (_scale * 0.75).clamp(0.5, 3.0))),
+              const SizedBox(width: 6),
               Text('${(_scale * 100).round()}%', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 11)),
-              const SizedBox(width: 8),
-              _scaleBtn('+', () => setState(() => _scale = (_scale * 1.33).clamp(0.5, 3.0))),
+              const SizedBox(width: 6),
+              _scaleBtn(Icons.add, () => setState(() => _scale = (_scale * 1.33).clamp(0.5, 3.0))),
               if (_scale != 1.0) ...[
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 GestureDetector(
                   onTap: () => setState(() => _scale = 1.0),
-                  child: Text('重置', style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 11)),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.06),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text('重置', style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 11)),
+                  ),
                 ),
               ],
             ],
@@ -117,16 +123,16 @@ class _TrendChartState extends State<TrendChart> {
     );
   }
 
-  Widget _scaleBtn(String label, VoidCallback onTap) {
+  Widget _scaleBtn(IconData icon, VoidCallback onTap) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        width: 32, height: 28,
         decoration: BoxDecoration(
           color: Colors.white.withOpacity(0.06),
           borderRadius: BorderRadius.circular(4),
         ),
-        child: Text(label, style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 18)),
+        child: Icon(icon, color: Colors.white.withOpacity(0.5), size: 16),
       ),
     );
   }
@@ -143,7 +149,6 @@ class _TrendChartState extends State<TrendChart> {
 
     final idx = ((localPos.dx - leftPad) / chartWidth * (count - 1)).round().clamp(0, count - 1);
     _crosshairIndex = idx;
-    _crosshairPos = localPos;
   }
 
   Widget _buildCrosshairInfo() {
@@ -159,7 +164,7 @@ class _TrendChartState extends State<TrendChart> {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         child: Row(
           children: [
-            Text('← 滑动查看 →', style: TextStyle(color: Colors.white.withOpacity(0.2), fontSize: 11)),
+            Text('滑动查看', style: TextStyle(color: Colors.white.withOpacity(0.2), fontSize: 11)),
             const Spacer(),
             Text('${widget.currencySymbol}${price.toStringAsFixed(2)}',
                 style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
@@ -208,9 +213,7 @@ class _TrendChartState extends State<TrendChart> {
   }
 
   String _shortenTime(String raw) {
-    if (raw.length >= 16 && raw.contains(' ')) {
-      return raw.split(' ').last.substring(0, 5);
-    }
+    if (raw.length >= 16 && raw.contains(' ')) return raw.split(' ').last.substring(0, 5);
     if (raw.length >= 5) return raw.substring(0, 5);
     return raw;
   }
@@ -222,7 +225,6 @@ class _TrendPainter extends CustomPainter {
   final double prevClose;
   final String currencySymbol;
   final int? crosshairIndex;
-  final Offset? crosshairPos;
   final double scale;
 
   _TrendPainter({
@@ -230,7 +232,6 @@ class _TrendPainter extends CustomPainter {
     required this.prevClose,
     this.currencySymbol = '¥',
     this.crosshairIndex,
-    this.crosshairPos,
     this.scale = 1.0,
   });
 
@@ -351,7 +352,7 @@ class _TrendPainter extends CustomPainter {
     _drawTimeLabels(canvas, size, topPad, chartHeight, leftPad, rightPad, bottomPad, visible, indexToX);
     _drawPriceLabels(canvas, size, leftPad, topPad, chartHeight, minP, maxP);
 
-    if (crosshairIndex != null && crosshairPos != null) {
+    if (crosshairIndex != null) {
       final visIdx = crosshairIndex! - startIdx;
       if (visIdx >= 0 && visIdx < visible.length) {
         _drawCrosshair(canvas, size, chartHeight, topPad, leftPad, rightPad, priceToY, indexToX, visIdx);
@@ -484,7 +485,6 @@ class _TrendPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _TrendPainter oldDelegate) {
     return oldDelegate.points != points || oldDelegate.prevClose != prevClose ||
-        oldDelegate.crosshairIndex != crosshairIndex || oldDelegate.crosshairPos != crosshairPos ||
-        oldDelegate.scale != scale;
+        oldDelegate.crosshairIndex != crosshairIndex || oldDelegate.scale != scale;
   }
 }
