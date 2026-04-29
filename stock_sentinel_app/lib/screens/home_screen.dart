@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../config.dart';
 import '../providers/watchlist_provider.dart';
 import '../providers/events_provider.dart';
 import '../services/ws_service.dart';
@@ -8,6 +9,7 @@ import '../widgets/event_card.dart';
 import 'events_screen.dart';
 import 'stock_search_screen.dart';
 import 'news_screen.dart';
+import 'login_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -99,11 +101,40 @@ class _HomeScreenState extends State<HomeScreen> {
             border: Border.all(color: Colors.white.withOpacity(0.08)),
           ),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _statItem('自选股', '${wl.stocks.length}'),
-              _statItem('今日事件', '${ev.unreadCount}'),
-              _statItem('行情', '${wl.quotes.length}'),
+              // 用户头像/登录入口
+              GestureDetector(
+                onTap: () => _openLogin(ctx),
+                child: Container(
+                  width: 44, height: 44,
+                  decoration: BoxDecoration(
+                    color: AppConfig.isLoggedIn
+                        ? const Color(0xFF4A90D9).withOpacity(0.2)
+                        : Colors.white.withOpacity(0.06),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Center(
+                    child: AppConfig.isLoggedIn
+                        ? Text(
+                            AppConfig.nickname.isNotEmpty ? AppConfig.nickname[0] : '?',
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF4A90D9)),
+                          )
+                        : Icon(Icons.person_outline, size: 22, color: Colors.white.withOpacity(0.4)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              // 统计数据
+              Expanded(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _statItem('自选股', '${wl.stocks.length}'),
+                    _statItem('今日事件', '${ev.unreadCount}'),
+                    _statItem('行情', '${wl.quotes.length}'),
+                  ],
+                ),
+              ),
             ],
           ),
         );
@@ -223,5 +254,46 @@ class _HomeScreenState extends State<HomeScreen> {
     if (added == true && mounted) {
       context.read<WatchlistProvider>().refresh();
     }
+  }
+
+  Future<void> _openLogin(BuildContext ctx) async {
+    if (AppConfig.isLoggedIn) {
+      // 已登录 → 显示用户信息/退出
+      final logout = await showDialog<bool>(
+        context: ctx,
+        builder: (dCtx) => AlertDialog(
+          title: Text('已登录: ${AppConfig.nickname}'),
+          content: Text('手机号: ${AppConfig.user?['phone'] ?? ''}'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dCtx, false), child: const Text('关闭')),
+            TextButton(
+              onPressed: () => Navigator.pop(dCtx, true),
+              child: const Text('退出登录', style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        ),
+      );
+      if (logout == true && mounted) {
+        await AppConfig.logout();
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已退出登录')));
+      }
+      return;
+    }
+    // 未登录 → 打开登录页
+    await Navigator.push(
+      ctx,
+      MaterialPageRoute(
+        builder: (_) => LoginScreen(
+          onLoginSuccess: () {
+            Navigator.pop(ctx);
+            setState(() {});
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('欢迎, ${AppConfig.nickname}!')),
+            );
+          },
+        ),
+      ),
+    );
   }
 }

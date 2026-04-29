@@ -4,30 +4,15 @@ import 'config.dart';
 import 'providers/watchlist_provider.dart';
 import 'providers/events_provider.dart';
 import 'screens/home_screen.dart';
-import 'screens/login_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await AppConfig.loadAuth(); // 加载本地token
+  await AppConfig.loadAuth();
   runApp(const StockSentinelApp());
 }
 
-class StockSentinelApp extends StatefulWidget {
+class StockSentinelApp extends StatelessWidget {
   const StockSentinelApp({super.key});
-
-  @override
-  State<StockSentinelApp> createState() => _StockSentinelAppState();
-}
-
-class _StockSentinelAppState extends State<StockSentinelApp> {
-  bool _ready = false;
-
-  @override
-  void initState() {
-    super.initState();
-    // 等 AppConfig 加载完
-    _ready = true;
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -79,34 +64,8 @@ class _StockSentinelAppState extends State<StockSentinelApp> {
             ),
           ),
         ),
-        home: _ready ? _buildHome() : const Scaffold(body: Center(child: CircularProgressIndicator())),
+        home: const HomeScreen(),
       ),
-    );
-  }
-
-  Widget _buildHome() {
-    // 已登录 → 直接进主页，未登录 → 显示登录页
-    return const _AuthGate();
-  }
-}
-
-class _AuthGate extends StatefulWidget {
-  const _AuthGate();
-
-  @override
-  State<_AuthGate> createState() => _AuthGateState();
-}
-
-class _AuthGateState extends State<_AuthGate> {
-  @override
-  Widget build(BuildContext context) {
-    if (AppConfig.isLoggedIn) {
-      return const HomeScreen();
-    }
-    return LoginScreen(
-      onLoginSuccess: () {
-        setState(() {}); // 触发重建，进入主页
-      },
     );
   }
 }
