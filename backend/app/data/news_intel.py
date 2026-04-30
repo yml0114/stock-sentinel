@@ -28,6 +28,7 @@
 import akshare as ak
 import logging
 import re
+import html as html_module
 import hashlib
 import urllib.request
 from datetime import datetime
@@ -516,11 +517,11 @@ def fetch_rss_news() -> list[dict]:
             req = urllib.request.Request(url, headers={
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
             })
-            resp = urllib.request.urlopen(req, timeout=5)  # 降低到5秒
+            resp = urllib.request.urlopen(req, timeout=10)  # 10秒超时
             data = resp.read().decode('utf-8', errors='ignore')
             
             rss_items = re.findall(r'<item>(.*?)</item>', data, re.DOTALL)
-            for item in rss_items[:15]:
+            for item in rss_items[:10]:
                 title_m = re.search(r'<title><!\[CDATA\[(.+?)\]\]></title>|<title>([^<]+)</title>', item)
                 desc_m = re.search(r'<description><!\[CDATA\[(.+?)\]\]></description>|<description>([^<]+)</description>', item, re.DOTALL)
                 link_m = re.search(r'<link>([^<]+)</link>', item)
@@ -555,9 +556,9 @@ def fetch_rss_news() -> list[dict]:
     # 并发抓取所有RSS源
     with ThreadPoolExecutor(max_workers=len(active_sources)) as pool:
         futures = {pool.submit(_fetch_single_rss, src): src[0] for src in active_sources}
-        for future in as_completed(futures, timeout=12):  # 总超时12秒
+        for future in as_completed(futures, timeout=20):  # 总超时20秒
             try:
-                name, items = future.result(timeout=6)
+                name, items = future.result(timeout=12)
                 results.extend(items)
                 logger.debug(f"  RSS {name}: {len(items)}条")
             except Exception:
