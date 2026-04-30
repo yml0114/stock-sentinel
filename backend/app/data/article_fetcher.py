@@ -184,7 +184,8 @@ def _clean_title(title: str) -> str:
 
 def _try_wallstreetcn(url: str) -> dict:
     """华尔街见闻文章 — 通过API获取完整正文"""
-    m = re.search(r'articles[/\-](\d+)', url)
+    # 匹配 articles/12345 和 livenews/12345
+    m = re.search(r'(?:articles|livenews)[/\-](\d+)', url)
     if not m:
         return {}
     article_id = m.group(1)
@@ -222,6 +223,32 @@ def _try_wallstreetcn(url: str) -> dict:
                 return {'title': title, 'text': text, 'length': len(text)}
     except Exception as e:
         logger.debug(f"华尔街见闻 API失败: {e}")
+
+    # 方法3: 从页面HTML直接提取 og:description 和 article 标签
+    try:
+        req = urllib.request.Request(url, headers=_HEADERS)
+        resp = urllib.request.urlopen(req, timeout=12)
+        html = resp.read().decode('utf-8', errors='ignore')
+        if html:
+            # 提取 og:description
+            desc_m = re.search(r'og:description["\s]*content="([^"]+)"', html)
+            desc = html_module.unescape(desc_m.group(1)).strip() if desc_m else ''
+            # 提取 article 标签内容
+            art_m = re.search(r'<article[^>]*>(.*?)</article>', html, re.S)
+            if art_m:
+                text = re.sub(r'<[^>]+>', '\n', art_m.group(1))
+                text = _clean_text(text)
+                if len(text) > 50:
+                    title_m = re.search(r'<title[^>]*>(.*?)</title>', html, re.S)
+                    title = re.sub(r'<[^>]+>', '', title_m.group(1)).strip() if title_m else desc[:60]
+                    return {'title': title, 'text': text, 'length': len(text)}
+            # 如果只有 og:description（快讯类短文），也返回
+            if desc and len(desc) > 30:
+                title_m = re.search(r'<title[^>]*>(.*?)</title>', html, re.S)
+                title = re.sub(r'<[^>]+>', '', title_m.group(1)).strip() if title_m else desc[:60]
+                return {'title': title, 'text': desc, 'length': len(desc)}
+    except Exception as e:
+        logger.debug(f"华尔街见闻 HTML提取失败: {e}")
 
     return {}
 
@@ -517,78 +544,98 @@ def _try_10jqka(url: str) -> dict:
 # ── 财联社专用 ──
 
 def _try_cls(url: str) -> dict:
-    """财联社文章 — 通过detail API获取完整正文"""
-    # 从URL提取文章ID: https://www.cls.cn/detail/123456
-    m = re.search(r'detail[/\-](\d+)', url)
-    if not m:
-        # 尝试从 telegraph URL 提取
-        m = re.search(r'telegraph[/\-](\d+)', url)
+    """财联社文章 — 多策略抓取（API + HTML解析）"""
+    # 从URL提取文章ID: detail/123456, telegraph/123456, share/article/123456
+    m = re.search(r'(?:detail|telegraph|share/article)[/\-](\d+)', url)
     if not m:
         return {}
     
     article_id = m.group(1)
+    is_share_url = 'share/article' in url or 'api3.cls.cn' in url
     
-    # 方法1: 财联社详情API
+    # 方法1: 直接抓取页面HTML解析（最可靠，不依赖API）
     try:
-        api_url = f"https://www.cls.cn/nodeapi/detail?app=CailianpressWeb&os=web&sv=8.4.6&id={article_id}"
-        req = urllib.request.Request(api_url, headers={
+        # 优先用share URL（HTML内容更丰富），否则用detail URL
+        fetch_url = url if is_share_url else f"https://www.cls.cn/detail/{article_id}"
+        req = urllib.request.Request(fetch_url, headers={
             'User-Agent': _UA,
-            'Referer': f'https://www.cls.cn/detail/{article_id}',
+            'Referer': 'https://www.cls.cn/',
         })
-        resp = urllib.request.urlopen(req, timeout=10)
-        data = json.loads(resp.read())
-        article_data = data.get('data', {})
+        resp = urllib.request.urlopen(req, timeout=12)
+        html = resp.read().decode('utf-8', errors='ignore')
         
-        # 可能在不同的嵌套层级
-        if isinstance(article_data, dict):
-            content_html = article_data.get('content', '') or article_data.get('brief', '')
-            title = article_data.get('title', '') or article_data.get('subject', '')
-        else:
-            content_html = ''
+        if html and len(html) > 500:
             title = ''
-        
-        if content_html:
-            # 去HTML标签
-            text = re.sub(r'<[^>]+>', '\n', content_html)
-            text = _clean_text(text)
-            if len(text) > 100:
+            text = ''
+            
+            # 提取 og:title / og:description
+            title_m = re.search(r'og:title["\s]*content="([^"]+)"', html)
+            desc_m = re.search(r'og:description["\s]*content="([^"]+)"', html)
+            if title_m:
+                title = html_module.unescape(title_m.group(1)).strip()
+            if desc_m:
+                desc = html_module.unescape(desc_m.group(1)).strip()
+            else:
+                desc = ''
+            
+            # 提取 telegraph-content div（快讯正文）
+            tc_m = re.search(r'<div[^>]*class="[^"]*telegraph-content[^"]*"[^>]*>(.*?)</div>', html, re.S)
+            if tc_m:
+                text = re.sub(r'<[^>]+>', '\n', tc_m.group(1))
+                text = _clean_text(text)
+            
+            # 如果telegraph-content太短，尝试提取所有 content div（深度文章）
+            if len(text) < 50:
+                # 提取 class="content content-XXXXX" 的div（对应当前文章ID）
+                content_m = re.search(
+                    rf'<div[^>]*class="[^"]*content\s+content-{article_id}[^"]*"[^>]*>(.*?)</div>',
+                    html, re.S
+                )
+                if content_m:
+                    text = re.sub(r'<[^>]+>', '\n', content_m.group(1))
+                    text = _clean_text(text)
+            
+            # 如果正文仍然太短，用 og:description
+            if len(text) < 50 and desc:
+                text = desc
+            
+            if len(text) > 50:
+                if not title:
+                    title = text.split('\n')[0].strip()[:80]
                 return {'title': _clean_title(title), 'text': text, 'length': len(text)}
+            
+            # 最后尝试 trafilatura
+            trafilatura_text = trafilatura.extract(
+                html, include_comments=False, output_format='txt', favor_recall=True
+            )
+            if trafilatura_text and len(trafilatura_text) > 50:
+                if not title:
+                    title = trafilatura_text.split('\n')[0].strip()[:80]
+                return {'title': _clean_title(title), 'text': trafilatura_text, 'length': len(trafilatura_text)}
+    except Exception as e:
+        logger.debug(f"财联社HTML解析失败: {e}")
+    
+    # 方法2: 财联社详情API（可能已失效，作为降级方案）
+    try:
+        for api_path in ['detail', 'telegraphDetail']:
+            api_url = f"https://www.cls.cn/nodeapi/{api_path}?app=CailianpressWeb&os=web&sv=8.4.6&id={article_id}"
+            req = urllib.request.Request(api_url, headers={
+                'User-Agent': _UA,
+                'Referer': f'https://www.cls.cn/detail/{article_id}',
+            })
+            resp = urllib.request.urlopen(req, timeout=8)
+            data = json.loads(resp.read())
+            article_data = data.get('data', {})
+            if isinstance(article_data, dict):
+                content_html = article_data.get('content', '') or article_data.get('brief', '')
+                title = article_data.get('title', '') or article_data.get('subject', '')
+                if content_html:
+                    text = re.sub(r'<[^>]+>', '\n', content_html)
+                    text = _clean_text(text)
+                    if len(text) > 50:
+                        return {'title': _clean_title(title), 'text': text, 'length': len(text)}
     except Exception as e:
         logger.debug(f"财联社API失败: {e}")
-    
-    # 方法2: telegraph API（快讯长文）
-    try:
-        api_url = f"https://www.cls.cn/nodeapi/telegraphDetail?app=CailianpressWeb&os=web&sv=8.4.6&id={article_id}"
-        req = urllib.request.Request(api_url, headers={
-            'User-Agent': _UA,
-            'Referer': f'https://www.cls.cn/detail/{article_id}',
-        })
-        resp = urllib.request.urlopen(req, timeout=10)
-        data = json.loads(resp.read())
-        article_data = data.get('data', {})
-        
-        if isinstance(article_data, dict):
-            content_html = article_data.get('content', '') or article_data.get('brief', '')
-            title = article_data.get('title', '') or article_data.get('subject', '')
-            
-            if content_html:
-                text = re.sub(r'<[^>]+>', '\n', content_html)
-                text = _clean_text(text)
-                if len(text) > 50:
-                    return {'title': _clean_title(title), 'text': text, 'length': len(text)}
-    except Exception as e:
-        logger.debug(f"财联社telegraph API失败: {e}")
-    
-    # 方法3: 直接抓取+trafilatura
-    try:
-        downloaded = trafilatura.fetch_url(url)
-        if downloaded:
-            text = trafilatura.extract(downloaded, include_comments=False, output_format='txt', favor_recall=True)
-            if text and len(text) > 100:
-                title = text.split('\n')[0].strip() if '\n' in text else ''
-                return {'title': title, 'text': text, 'length': len(text)}
-    except Exception as e:
-        logger.debug(f"财联社trafilatura失败: {e}")
     
     return {}
 
