@@ -110,6 +110,9 @@ def diagnose_stock(stock_code: str, stock_name: str, market: str,
             timeout=30,
         )
         data = resp.json()
+        logger.info(f"AI诊断 {stock_code} raw response keys: {list(data.keys())}, status: {resp.status_code}")
+        if "error" in data:
+            logger.error(f"AI诊断 {stock_code} API error: {data['error']}")
         ai_analysis = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         # 思考模型(如mimo-v2.5-pro)回复在reasoning_content
         if not ai_analysis:
