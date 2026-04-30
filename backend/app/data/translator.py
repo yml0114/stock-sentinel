@@ -43,7 +43,7 @@ def _ai_translate(texts: list[str]) -> dict[str, str]:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": config.AI_MODEL,
+                    "model": "mimo-v2.5",  # 用非思考模型，避免reasoning消耗所有tokens
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 2000,
                     "temperature": 0.1,
