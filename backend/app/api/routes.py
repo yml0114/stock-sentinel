@@ -339,6 +339,11 @@ def _format_news_item(item):
         "time": item.get("time", ""),
         "url": item.get("url", ""),
     }
+    # 中文翻译（标题+内容）
+    if item.get("title_cn"):
+        entry["title_cn"] = item["title_cn"]
+    if item.get("content_cn"):
+        entry["content_cn"] = item["content_cn"][:800]
     if item.get("title_en"):
         entry["title_en"] = item["title_en"]
         entry["titleEn"] = item["title_en"]
