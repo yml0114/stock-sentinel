@@ -111,6 +111,9 @@ def diagnose_stock(stock_code: str, stock_name: str, market: str,
         )
         data = resp.json()
         ai_analysis = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        # 思考模型(如mimo-v2.5-pro)回复在reasoning_content
+        if not ai_analysis:
+            ai_analysis = data.get("choices", [{}])[0].get("message", {}).get("reasoning_content", "")
         logger.info(f"AI诊断 {stock_code} 完成，{len(ai_analysis)} 字")
     except Exception as e:
         logger.error(f"AI诊断 {stock_code} 失败: {e}")

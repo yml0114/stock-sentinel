@@ -78,7 +78,13 @@ def _call_ai(system: str, user: str, max_tokens: int = 500) -> str:
             temperature=0.3,
         )
         ai_call_count += 1
-        return response.choices[0].message.content.strip()
+        msg = response.choices[0].message
+        # 思考模型(如mimo-v2.5-pro)回复在reasoning_content
+        content = (msg.content or '').strip()
+        if not content:
+            reasoning = getattr(msg, 'reasoning_content', '') or ''
+            content = reasoning.strip()
+        return content if content else '（AI分析返回为空）'
     except Exception as e:
         logger.error(f"AI 调用失败: {e}")
         return f"（AI分析失败: {str(e)[:200]}）"
