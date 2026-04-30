@@ -58,7 +58,6 @@ def _ai_translate(texts: list[str]) -> dict[str, str]:
                 content = msg.get("reasoning_content", "")
 
             # 解析编号结果
-            logger.info(f"AI返回 content={content[:200]!r}, reasoning={msg.get('reasoning_content','')[:100]!r}")
             for line in content.strip().split("\n"):
                 line = line.strip()
                 if not line:
