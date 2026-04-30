@@ -3,6 +3,7 @@ import '../config.dart';
 import '../models/stock.dart';
 import '../models/quote.dart';
 import '../models/event.dart';
+import '../utils/logger.dart';
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
@@ -25,7 +26,42 @@ class ApiService {
         }
         handler.next(options);
       },
+      onError: (error, handler) {
+        // 将Dio异常转为用户友好的中文提示
+        final msg = _friendlyError(error);
+        AppLog.e('API', '${error.requestOptions.path}: $msg');
+        handler.next(DioException(
+          requestOptions: error.requestOptions,
+          error: msg,
+          type: error.type,
+          response: error.response,
+        ));
+      },
     ));
+  }
+
+  /// 将网络错误转为中文提示
+  static String _friendlyError(DioException e) {
+    switch (e.type) {
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+        return '网络超时，请稍后重试';
+      case DioExceptionType.connectionError:
+        return '网络连接失败，请检查网络';
+      case DioExceptionType.badResponse:
+        final code = e.response?.statusCode;
+        if (code == 401) return '登录已过期，请重新登录';
+        if (code == 403) return '没有访问权限';
+        if (code == 404) return '请求的资源不存在';
+        if (code == 500) return '服务器内部错误';
+        if (code == 502 || code == 503) return '服务暂时不可用';
+        return '请求失败 ($code)';
+      case DioExceptionType.cancel:
+        return '请求已取消';
+      default:
+        return '网络异常，请稍后重试';
+    }
   }
 
   dynamic _extract(Response res) {
@@ -115,6 +151,24 @@ class ApiService {
   Future<Map<String, dynamic>> getStatus() async {
     final res = await _dio.get('/status');
     return _extract(res) as Map<String, dynamic>;
+  }
+
+  // ── 邀请系统 ──
+
+  Future<Map<String, dynamic>> getInviteStatus() async {
+    final res = await _dio.get('/invite/status');
+    return _extract(res) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> redeemInviteCode(String code) async {
+    final res = await _dio.post('/invite/redeem', data: {'invite_code': code});
+    return res.data as Map<String, dynamic>;
+  }
+
+  Future<List<Map<String, dynamic>>> getInviteFriends() async {
+    final res = await _dio.get('/invite/friends');
+    final data = _extract(res) as List;
+    return data.cast<Map<String, dynamic>>();
   }
 
   // ── 股票搜索 ──

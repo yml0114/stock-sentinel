@@ -81,7 +81,7 @@ def _call_ai(system: str, user: str, max_tokens: int = 500) -> str:
         return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"AI 调用失败: {e}")
-        return f"（AI分析失败: {str(e)[:100]}）"
+        return f"（AI分析失败: {str(e)[:200]}）"
 
 
 def analyze_event(event: dict, quote: dict = None) -> str:

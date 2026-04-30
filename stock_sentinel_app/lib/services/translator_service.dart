@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
+import '../utils/logger.dart';
 
 /// APP端本地翻译服务 — 4引擎并行竞争，取最快结果
 class TranslatorService {
@@ -54,11 +54,11 @@ class TranslatorService {
       final result = await Future.any(futures.where((f) => f != null).cast<Future<String?>>());
       if (result != null && result.isNotEmpty) {
         _cache[text] = result;
-        debugPrint('🌐 翻译完成: ${text.substring(0, text.length > 30 ? 30 : text.length)}...');
+        AppLog.d('Translate', '翻译完成: ${text.substring(0, text.length > 30 ? 30 : text.length)}...');
         return result;
       }
     } catch (e) {
-      debugPrint('🌐 翻译失败: $e');
+      AppLog.e('Translate', '翻译失败', e);
     }
     
     return text; // 翻译失败返回原文

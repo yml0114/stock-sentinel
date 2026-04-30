@@ -68,13 +68,15 @@ class _ProfessionalKlineChartState extends State<ProfessionalKlineChart> {
             },
             behavior: HitTestBehavior.opaque,
             child: ClipRect(
-              child: CustomPaint(
-                size: const Size(double.infinity, 280),
-                painter: _KlinePainter(
-                  data: widget.data,
-                  currencySymbol: widget.currencySymbol,
-                  crosshairIndex: _crosshairIndex,
-                  scale: _scale,
+              child: RepaintBoundary(
+                child: CustomPaint(
+                  size: const Size(double.infinity, 280),
+                  painter: _KlinePainter(
+                    data: widget.data,
+                    currencySymbol: widget.currencySymbol,
+                    crosshairIndex: _crosshairIndex,
+                    scale: _scale,
+                  ),
                 ),
               ),
             ),

@@ -1,6 +1,8 @@
 """
 认证模块 — 手机验证码登录 + JWT Token
-免费方案：验证码通过ntfy.sh推送（已集成），或开发模式直接返回
+腾讯云SMS免费100条/月，需设置环境变量：
+  TENCENT_SMS_SECRET_ID, TENCENT_SMS_SECRET_KEY, TENCENT_SMS_SDK_APP_ID, TENCENT_SMS_SIGN_NAME, TENCENT_SMS_TEMPLATE_ID
+未配置时自动降级为开发模式（ntfy.sh推送 + 控制台打印）
 """
 import os
 import random
@@ -21,8 +23,15 @@ JWT_EXPIRE = 86400 * 30  # 30天
 CODE_TTL = 300  # 5分钟有效
 CODE_LENGTH = 6
 
-# ntfy.sh推送地址（已有）
+# ntfy.sh推送地址（备用）
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "stock-sentinel-alerts")
+
+# 腾讯云SMS配置
+TENCENT_SECRET_ID = os.getenv("TENCENT_SMS_SECRET_ID", "")
+TENCENT_SECRET_KEY = os.getenv("TENCENT_SMS_SECRET_KEY", "")
+TENCENT_SDK_APP_ID = os.getenv("TENCENT_SMS_SDK_APP_ID", "")
+TENCENT_SIGN_NAME = os.getenv("TENCENT_SMS_SIGN_NAME", "")
+TENCENT_TEMPLATE_ID = os.getenv("TENCENT_SMS_TEMPLATE_ID", "")
 
 # 内存存储验证码 {phone: {code, expire_at, attempts}}
 _codes: dict[str, dict] = {}
@@ -84,10 +93,117 @@ def verify_token(token: str) -> dict | None:
         return None
 
 
+def _send_via_tencent_sms(phone: str, code: str) -> bool:
+    """通过腾讯云SMS发送验证码"""
+    if not all([TENCENT_SECRET_ID, TENCENT_SECRET_KEY, TENCENT_SDK_APP_ID,
+                TENCENT_SIGN_NAME, TENCENT_TEMPLATE_ID]):
+        return False
+
+    try:
+        # 腾讯云SMS API v3 (TC3-HMAC-SHA256签名)
+        import time as _time
+        import datetime as _dt
+        import hashlib as _hash
+        import hmac as _hmac
+        import json as _json
+
+        service = "sms"
+        host = "sms.tencentcloudapi.com"
+        endpoint = f"https://{host}"
+        action = "SendSms"
+        version = "2021-01-11"
+        region = "ap-guangzhou"
+        algorithm = "TC3-HMAC-SHA256"
+
+        # 请求体
+        payload = _json.dumps({
+            "PhoneNumberSet": [f"+86{phone}"],
+            "SmsSdkAppId": TENCENT_SDK_APP_ID,
+            "SignName": TENCENT_SIGN_NAME,
+            "TemplateId": TENCENT_TEMPLATE_ID,
+            "TemplateParamSet": [code],
+        })
+
+        # TC3签名
+        timestamp = int(_time.time())
+        date = _dt.datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d')
+
+        # Step 1: CanonicalRequest
+        http_request_method = "POST"
+        canonical_uri = "/"
+        canonical_querystring = ""
+        canonical_headers = f"content-type:application/json\nhost:{host}\n"
+        signed_headers = "content-type;host"
+        hashed_payload = _hash.sha256(payload.encode('utf-8')).hexdigest()
+        canonical_request = (f"{http_request_method}\n{canonical_uri}\n{canonical_querystring}\n"
+                           f"{canonical_headers}\n{signed_headers}\n{hashed_payload}")
+
+        # Step 2: StringToSign
+        credential_scope = f"{date}/{service}/tc3_request"
+        hashed_canonical_request = _hash.sha256(canonical_request.encode('utf-8')).hexdigest()
+        string_to_sign = f"{algorithm}\n{timestamp}\n{credential_scope}\n{hashed_canonical_request}"
+
+        # Step 3: Signature
+        def _hmac_sha256(key, msg):
+            return _hmac.new(key, msg.encode('utf-8'), _hash.sha256).digest()
+
+        secret_date = _hmac_sha256(f"TC3{TENCENT_SECRET_KEY}".encode('utf-8'), date)
+        secret_service = _hmac_sha256(secret_date, service)
+        secret_signing = _hmac_sha256(secret_service, "tc3_request")
+        signature = _hmac.new(secret_signing, string_to_sign.encode('utf-8'), _hash.sha256).hexdigest()
+
+        # Authorization header
+        authorization = (f"{algorithm} "
+                        f"Credential={TENCENT_SECRET_ID}/{credential_scope}, "
+                        f"SignedHeaders={signed_headers}, "
+                        f"Signature={signature}")
+
+        # 发送请求
+        headers = {
+            "Authorization": authorization,
+            "Content-Type": "application/json",
+            "Host": host,
+            "X-TC-Action": action,
+            "X-TC-Version": version,
+            "X-TC-Timestamp": str(timestamp),
+            "X-TC-Region": region,
+        }
+
+        resp = req_lib.post(endpoint, data=payload, headers=headers, timeout=10)
+        result = resp.json()
+
+        if result.get("Response", {}).get("SendStatusSet", [{}])[0].get("Code") == "Ok":
+            logger.info(f"📱 腾讯云SMS发送成功 → {phone}")
+            return True
+        else:
+            err = result.get("Response", {}).get("Error", {})
+            logger.error(f"腾讯云SMS发送失败: {err}")
+            return False
+
+    except Exception as e:
+        logger.error(f"腾讯云SMS异常: {e}")
+        return False
+
+
+def _send_via_ntfy(phone: str, code: str) -> bool:
+    """通过ntfy.sh推送验证码（备用方案）"""
+    try:
+        resp = req_lib.post(
+            f"https://ntfy.sh/{NTFY_TOPIC}",
+            data=f"【金融哨兵】验证码：{code}，5分钟内有效。".encode(encoding="utf-8"),
+            headers={"Title": "登录验证码", "Tags": "key", "Priority": "urgent"},
+            timeout=5,
+        )
+        return resp.status_code == 200
+    except Exception as e:
+        logger.warning(f"ntfy.sh推送失败: {e}")
+        return False
+
+
 def send_code(phone: str) -> dict:
     """
     发送验证码到手机
-    返回 {"success": bool, "message": str, "code": str(开发模式)}
+    优先级：腾讯云SMS → ntfy.sh → 开发模式（直接返回）
     """
     if not phone or len(phone) < 11:
         return {"success": False, "message": "手机号格式不正确"}
@@ -99,31 +215,17 @@ def send_code(phone: str) -> dict:
         "attempts": 0,
     }
 
-    # 尝试通过ntfy.sh推送验证码
-    sent_via_ntfy = False
-    try:
-        resp = req_lib.post(
-            f"https://ntfy.sh/{NTFY_TOPIC}",
-            data=f"【金融哨兵】验证码：{code}，5分钟内有效。".encode(encoding="utf-8"),
-            headers={
-                "Title": "登录验证码",
-                "Tags": "key",
-                "Priority": "urgent",
-            },
-            timeout=5,
-        )
-        sent_via_ntfy = resp.status_code == 200
-    except Exception as e:
-        logger.warning(f"ntfy.sh推送失败: {e}")
+    # 1. 尝试腾讯云SMS（真实短信）
+    if _send_via_tencent_sms(phone, code):
+        return {"success": True, "message": "验证码已发送到手机"}
 
-    msg = "验证码已发送"
-    if sent_via_ntfy:
-        msg += "（请查看ntfy.sh通知）"
-    else:
-        msg += f"（开发模式：{code}）"
+    # 2. 尝试ntfy.sh推送
+    if _send_via_ntfy(phone, code):
+        return {"success": True, "message": "验证码已发送（请查看ntfy通知）"}
 
-    logger.info(f"📱 验证码 → {phone}: {code}")
-    return {"success": True, "message": msg, "code": code}
+    # 3. 开发模式
+    logger.info(f"📱 验证码(开发模式) → {phone}: {code}")
+    return {"success": True, "message": f"验证码已发送（开发模式：{code}）", "code": code}
 
 
 def verify_code(phone: str, code: str) -> bool:

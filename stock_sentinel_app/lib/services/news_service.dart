@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
 import '../services/translator_service.dart';
+import '../utils/logger.dart';
 
 /// 新闻服务 — 本地缓存 + 后台自动刷新 + 本地翻译
 class NewsService {
@@ -53,10 +53,10 @@ class NewsService {
           (n['title_cn'] ?? '').toString().isNotEmpty || 
           !_translator.isEnglish((n['title'] ?? '').toString())
         ).length;
-        debugPrint('📰 本地缓存加载: ${_news.length}条, 已翻译: $_translatedCount');
+        AppLog.d('News', '本地缓存加载: ${_news.length}条, 已翻译: $_translatedCount');
       }
     } catch (e) {
-      debugPrint('📰 本地缓存加载失败: $e');
+      AppLog.e('News', '本地缓存加载失败', e);
     }
   }
 
@@ -82,19 +82,20 @@ class NewsService {
         _totalCount = _news.length;
         _translatedCount = 0;
         await _saveLocalCache();
-        debugPrint('📰 新闻刷新: ${_news.length}条');
+        AppLog.d('News', '新闻刷新: ${_news.length}条');
         _onUpdate?.call();
         
         // 后台逐条翻译英文新闻
         _translateNewsBackground();
       }
     } catch (e) {
-      debugPrint('📰 新闻刷新失败: $e');
+      AppLog.e('News', '新闻刷新失败', e);
     }
   }
 
-  /// 后台翻译新闻列表（边翻译边更新UI）
+  /// 后台翻译新闻列表 — 一次性完成后刷新UI，避免每条翻译都触发重建
   Future<void> _translateNewsBackground() async {
+    int completed = 0;
     for (int i = 0; i < _news.length; i++) {
       final item = _news[i];
       final title = (item['title'] ?? '').toString();
@@ -102,7 +103,7 @@ class NewsService {
       
       // 如果标题已经是中文，跳过
       if (!_translator.isEnglish(title)) {
-        _translatedCount++;
+        completed++;
         continue;
       }
       
@@ -123,21 +124,27 @@ class NewsService {
           }
         }
         
-        _translatedCount++;
-        _onUpdate?.call(); // 通知UI刷新
+        completed++;
+        _translatedCount = completed;
+        
+        // 每翻译5条刷新一次UI
+        if (completed % 5 == 0 || completed == _totalCount) {
+          _onUpdate?.call();
+        }
         
         // 小延迟，避免API限流
         await Future.delayed(const Duration(milliseconds: 100));
       } catch (e) {
-        _translatedCount++;
-        debugPrint('📰 翻译失败 [${title.substring(0, title.length > 20 ? 20 : title.length)}]: $e');
+        completed++;
+        _translatedCount = completed;
+        AppLog.w('News', '翻译失败 [${title.substring(0, title.length > 30 ? 30 : title.length)}]: $e');
       }
     }
     
-    // 全部翻译完成，保存缓存
+    // 最终保存缓存并通知
     await _saveLocalCache();
-    debugPrint('📰 翻译完成: $_translatedCount/$_totalCount');
     _onUpdate?.call();
+    AppLog.d('News', '翻译完成: $_translatedCount/$_totalCount');
   }
 
   VoidCallback? _onUpdate;

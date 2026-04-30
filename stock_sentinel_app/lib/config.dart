@@ -17,6 +17,23 @@ class AppConfig {
   static Map<String, dynamic>? get user => _user;
   static bool get isLoggedIn => _token != null && _token!.isNotEmpty;
   static String get nickname => _user?['nickname'] ?? '游客';
+  // 功能开关（未想好商业模式前全部隐藏）
+  static const bool enablePremium = false;
+
+  static bool _isPremium = false;
+  static bool get isPremium => _isPremium;
+  static set isPremium(bool v) => _isPremium = v;
+
+  static Future<void> loadPremium() async {
+    final prefs = await SharedPreferences.getInstance();
+    _isPremium = prefs.getBool('is_premium') ?? false;
+  }
+
+  static Future<void> savePremium(bool v) async {
+    _isPremium = v;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('is_premium', v);
+  }
 
   /// 从本地存储加载token
   static Future<void> loadAuth() async {
@@ -31,6 +48,7 @@ class AppConfig {
         _user = null;
       }
     }
+    await loadPremium();
   }
 
   static Future<void> saveToken(String token) async {

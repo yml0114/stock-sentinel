@@ -4,6 +4,7 @@ import 'config.dart';
 import 'providers/watchlist_provider.dart';
 import 'providers/events_provider.dart';
 import 'screens/home_screen.dart';
+import 'screens/login_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -64,8 +65,34 @@ class StockSentinelApp extends StatelessWidget {
             ),
           ),
         ),
-        home: const HomeScreen(),
+        home: const _AuthGate(),
       ),
+    );
+  }
+}
+
+/// 认证门控 — 未登录显示登录页，已登录直接进主页
+class _AuthGate extends StatefulWidget {
+  const _AuthGate();
+  @override
+  State<_AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<_AuthGate> {
+  bool _skipped = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (AppConfig.isLoggedIn || _skipped) {
+      return const HomeScreen();
+    }
+    return LoginScreen(
+      onLoginSuccess: () {
+        setState(() {}); // 切换到 HomeScreen
+      },
+      onSkip: () {
+        setState(() => _skipped = true); // 跳过，以游客身份进入
+      },
     );
   }
 }

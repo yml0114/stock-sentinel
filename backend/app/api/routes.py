@@ -15,6 +15,8 @@ from app.database import (
     add_watchlist, remove_watchlist, get_watchlist,
     get_events, get_today_events_count,
     create_user, get_user_by_phone, update_user_settings, get_user_settings,
+    get_or_create_invite_code, get_invite_code_owner, add_invite,
+    get_invite_count, get_invitees, set_premium, check_premium,
 )
 from app.auth import send_code, verify_code, create_token, verify_token
 from app.data.stock_data import (
@@ -115,6 +117,10 @@ class CodeVerify(BaseModel):
 
 class SettingsUpdate(BaseModel):
     settings: dict
+
+
+class InviteCodeInput(BaseModel):
+    invite_code: str
 
 
 # ══════════════════════════════════════════════
@@ -496,6 +502,76 @@ async def api_get_comment(stock_code: str):
     """获取个股千股千评（机构参与度、综合得分、主力成本）"""
     comment = get_stock_comment(stock_code)
     return {"code": 0, "data": comment}
+
+
+# ══════════════════════════════════════════════
+# 邀请系统 API
+# ══════════════════════════════════════════════
+
+@router.get("/invite/status")
+async def api_invite_status(request: Request):
+    """获取当前用户的邀请状态"""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return {"code": 401, "message": "未登录"}
+    invite_code = await get_or_create_invite_code(user_id)
+    invite_count = await get_invite_count(user_id)
+    is_premium = await check_premium(user_id)
+    return {
+        "code": 0,
+        "data": {
+            "inviteCode": invite_code,
+            "inviteCount": invite_count,
+            "inviteGoal": 5,
+            "isPremium": is_premium,
+        }
+    }
+
+
+@router.post("/invite/redeem")
+async def api_invite_redeem(body: InviteCodeInput, request: Request):
+    """使用邀请码"""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return {"code": 401, "message": "未登录"}
+
+    inviter_id = await get_invite_code_owner(body.invite_code)
+    if not inviter_id:
+        return {"code": 404, "message": "邀请码无效"}
+    if inviter_id == user_id:
+        return {"code": 400, "message": "不能使用自己的邀请码"}
+
+    # 检查是否已经用过
+    from app.database import get_db
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT id FROM invites WHERE inviter_id = ? AND invitee_id = ?",
+            (inviter_id, user_id)
+        )
+        if await cursor.fetchone():
+            return {"code": 400, "message": "您已使用过该邀请码"}
+    finally:
+        await db.close()
+
+    await add_invite(inviter_id, user_id)
+    count = await get_invite_count(inviter_id)
+
+    # 检查邀请人是否达标 → 自动解锁
+    if count >= 5:
+        await set_premium(inviter_id, True)
+
+    return {"code": 0, "data": {"message": f"邀请成功！该用户已邀请 {count}/5 人"}}
+
+
+@router.get("/invite/friends")
+async def api_invite_friends(request: Request):
+    """获取邀请的好友列表"""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return {"code": 401, "message": "未登录"}
+    friends = await get_invitees(user_id)
+    return {"code": 0, "data": friends}
 
 
 # ── WebSocket 实时推送 ──

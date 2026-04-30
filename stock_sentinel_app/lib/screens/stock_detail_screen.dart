@@ -76,7 +76,7 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
     _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (_checkTradingHours() && mounted) {
         _loadTrend(silent: true);
-        _loadProfile();
+        _loadProfileSilent();
       }
     });
   }
@@ -125,14 +125,18 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
   }
 
   Future<void> _loadProfile() async {
+    if (!mounted) return;
     setState(() => _loadingProfile = true);
     try {
-      final profile = await _api.getProfile(widget.code);
-      final comment = await _api.getComment(widget.code);
+      // 并行请求画像+千股千评，不再串行等待
+      final results = await Future.wait([
+        _api.getProfile(widget.code),
+        _api.getComment(widget.code),
+      ]);
       if (mounted) setState(() {
-        _profile = profile;
-        _comment = comment;
-        _currentPrice = (comment['price'] as num?)?.toDouble() ?? 0;
+        _profile = results[0] as Map<String, dynamic>;
+        _comment = results[1] as Map<String, dynamic>;
+        _currentPrice = ((_comment)['price'] as num?)?.toDouble() ?? 0;
         _loadingProfile = false;
       });
     } catch (e) {
@@ -144,6 +148,21 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
     try {
       final events = await _api.getEvents(code: widget.code, limit: 20);
       if (mounted) setState(() => _events = events);
+    } catch (_) {}
+  }
+
+  /// 静默刷新画像+千股千评（不触发loading状态，避免UI闪烁）
+  Future<void> _loadProfileSilent() async {
+    try {
+      final results = await Future.wait([
+        _api.getProfile(widget.code),
+        _api.getComment(widget.code),
+      ]);
+      if (mounted) setState(() {
+        _profile = results[0] as Map<String, dynamic>;
+        _comment = results[1] as Map<String, dynamic>;
+        _currentPrice = ((_comment)['price'] as num?)?.toDouble() ?? 0;
+      });
     } catch (_) {}
   }
 
@@ -341,17 +360,34 @@ class _StockDetailScreenState extends State<StockDetailScreen> {
   }
 
   Widget _indicatorChip(String label, String value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+    // 指标中文说明映射
+    const tooltips = {
+      'RSI': '相对强弱指数 (>70超买, <30超卖)',
+      'KDJ-K': 'KDJ随机指标K值 (>80超买, <20超卖)',
+      'DIF': 'MACD差离值 (上穿0轴看多)',
+      'BOLL上': '布林带上轨 (价格触及可能回调)',
+      'BOLL下': '布林带下轨 (价格触及可能反弹)',
+    };
+    return Tooltip(
+      message: tooltips[label] ?? label,
+      textStyle: const TextStyle(color: Colors.white, fontSize: 12),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(4),
+        color: const Color(0xFF1A1A2E),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white.withOpacity(0.15)),
       ),
-      child: Text.rich(
-        TextSpan(children: [
-          TextSpan(text: '$label ', style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 11)),
-          TextSpan(text: value, style: const TextStyle(color: Color(0xFF4A90D9), fontSize: 12, fontWeight: FontWeight.w600)),
-        ]),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text.rich(
+          TextSpan(children: [
+            TextSpan(text: '$label ', style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 11)),
+            TextSpan(text: value, style: const TextStyle(color: Color(0xFF4A90D9), fontSize: 12, fontWeight: FontWeight.w600)),
+          ]),
+        ),
       ),
     );
   }

@@ -30,6 +30,8 @@ async def init_db():
                 nickname TEXT DEFAULT '',
                 avatar TEXT DEFAULT '',
                 settings TEXT DEFAULT '{}',
+                invite_code TEXT DEFAULT '',
+                is_premium INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
                 last_login TEXT
             )
@@ -75,6 +77,24 @@ async def init_db():
             await db.execute("ALTER TABLE events ADD COLUMN user_id INTEGER DEFAULT 0")
         except Exception:
             pass  # 字段已存在
+
+        # 迁移：给旧users表加新字段
+        for col, default in [("invite_code", "''"), ("is_premium", "0")]:
+            try:
+                await db.execute(f"ALTER TABLE users ADD COLUMN {col} DEFAULT {default}")
+            except Exception:
+                pass  # 字段已存在
+
+        # 邀请记录表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS invites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                inviter_id INTEGER NOT NULL,
+                invitee_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(inviter_id, invitee_id)
+            )
+        """)
 
         # 索引
         await db.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id)")
@@ -291,5 +311,104 @@ async def toggle_alert(stock_code: str, enabled: bool, user_id: int = 0) -> bool
         )
         await db.commit()
         return cursor.rowcount > 0
+    finally:
+        await db.close()
+
+
+# ── 邀请系统操作 ──
+
+async def generate_invite_code(user_id: int) -> str:
+    """为用户生成邀请码（基于user_id的简单编码）"""
+    import hashlib
+    raw = f"sentinel-{user_id}-2026"
+    return hashlib.md5(raw.encode()).hexdigest()[:8].upper()
+
+
+async def get_or_create_invite_code(user_id: int) -> str:
+    """获取用户邀请码，不存在则生成"""
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT invite_code FROM users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if row and row['invite_code']:
+            return row['invite_code']
+        code = await generate_invite_code(user_id)
+        await db.execute("UPDATE users SET invite_code = ? WHERE id = ?", (code, user_id))
+        await db.commit()
+        return code
+    finally:
+        await db.close()
+
+
+async def get_invite_code_owner(invite_code: str) -> int | None:
+    """通过邀请码找邀请人ID"""
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT id FROM users WHERE invite_code = ?", (invite_code,))
+        row = await cursor.fetchone()
+        return row['id'] if row else None
+    finally:
+        await db.close()
+
+
+async def add_invite(inviter_id: int, invitee_id: int) -> bool:
+    """记录邀请关系"""
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT OR IGNORE INTO invites (inviter_id, invitee_id, created_at) VALUES (?, ?, ?)",
+            (inviter_id, invitee_id, datetime.now().isoformat())
+        )
+        await db.commit()
+        return True
+    finally:
+        await db.close()
+
+
+async def get_invite_count(user_id: int) -> int:
+    """获取用户已邀请人数"""
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT COUNT(*) FROM invites WHERE inviter_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return row[0]
+    finally:
+        await db.close()
+
+
+async def get_invitees(user_id: int) -> list[dict]:
+    """获取邀请的好友列表"""
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            """SELECT u.nickname, u.phone, i.created_at FROM invites i
+               JOIN users u ON u.id = i.invitee_id
+               WHERE i.inviter_id = ?
+               ORDER BY i.created_at DESC""",
+            (user_id,)
+        )
+        rows = await cursor.fetchall()
+        return [{"nickname": r['nickname'], "phone": r['phone'], "joinedAt": r['created_at']} for r in rows]
+    finally:
+        await db.close()
+
+
+async def set_premium(user_id: int, is_premium: bool = True) -> None:
+    """设置用户付费状态"""
+    db = await get_db()
+    try:
+        await db.execute("UPDATE users SET is_premium = ? WHERE id = ?", (1 if is_premium else 0, user_id))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def check_premium(user_id: int) -> bool:
+    """检查用户是否付费"""
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT is_premium FROM users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return bool(row and row['is_premium'])
     finally:
         await db.close()

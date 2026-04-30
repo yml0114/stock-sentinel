@@ -10,6 +10,7 @@ import 'events_screen.dart';
 import 'stock_search_screen.dart';
 import 'news_screen.dart';
 import 'login_screen.dart';
+import '../widgets/paywall_dialog.dart';  // also exports InvitePage
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -27,6 +28,7 @@ class _HomeScreenState extends State<HomeScreen> {
     Future.microtask(() {
       context.read<WatchlistProvider>().refresh();
       context.read<EventsProvider>().refresh();
+      // 付费墙已隐藏（enablePremium=false）
     });
     WsService().eventStream.listen((event) {
       if (event['type'] == 'new_event') {
@@ -172,7 +174,13 @@ class _HomeScreenState extends State<HomeScreen> {
           return const Center(child: Padding(padding: EdgeInsets.all(32), child: CircularProgressIndicator()));
         }
         if (provider.stocks.isEmpty) {
-          return _emptyState(Icons.add_chart, '暂无自选股', '点击右上角 + 添加');
+          final hasError = provider.error != null;
+          return _emptyState(
+            hasError ? Icons.cloud_off : Icons.add_chart,
+            hasError ? '加载失败' : '暂无自选股',
+            hasError ? '网络连接异常，请检查网络' : '点击右上角 + 添加',
+            onRetry: hasError ? () => provider.refresh() : null,
+          );
         }
         return Column(
           children: provider.stocks.map((stock) {
@@ -221,7 +229,12 @@ class _HomeScreenState extends State<HomeScreen> {
           return const Center(child: Padding(padding: EdgeInsets.all(32), child: CircularProgressIndicator()));
         }
         if (provider.events.isEmpty) {
-          return _emptyState(Icons.notifications_none, '暂无事件', '系统运行后会自动监控');
+          return _emptyState(
+            Icons.notifications_none,
+            '暂无事件',
+            '系统运行后会自动监控',
+            onRetry: () => provider.refresh(),
+          );
         }
         return Column(
           children: provider.events.take(3).map((e) => EventCard(event: e)).toList(),
@@ -230,7 +243,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _emptyState(IconData icon, String title, String subtitle) {
+  Widget _emptyState(IconData icon, String title, String subtitle, {VoidCallback? onRetry}) {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 40),
       alignment: Alignment.center,
@@ -241,6 +254,21 @@ class _HomeScreenState extends State<HomeScreen> {
           Text(title, style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 16)),
           const SizedBox(height: 4),
           Text(subtitle, style: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 13)),
+          if (onRetry != null) ...[
+            const SizedBox(height: 16),
+            GestureDetector(
+              onTap: onRetry,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF4A90D9).withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFF4A90D9).withOpacity(0.3)),
+                ),
+                child: const Text('重试', style: TextStyle(color: Color(0xFF4A90D9), fontSize: 14, fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -258,25 +286,66 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _openLogin(BuildContext ctx) async {
     if (AppConfig.isLoggedIn) {
-      // 已登录 → 显示用户信息/退出
-      final logout = await showDialog<bool>(
+      // 已登录 → 显示用户信息/邀请/退出
+      final action = await showDialog<String>(
         context: ctx,
-        builder: (dCtx) => AlertDialog(
-          title: Text('已登录: ${AppConfig.nickname}'),
-          content: Text('手机号: ${AppConfig.user?['phone'] ?? ''}'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(dCtx, false), child: const Text('关闭')),
-            TextButton(
-              onPressed: () => Navigator.pop(dCtx, true),
-              child: const Text('退出登录', style: TextStyle(color: Colors.red)),
+        builder: (dCtx) => SimpleDialog(
+          backgroundColor: const Color(0xFF16213E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text(AppConfig.nickname, style: const TextStyle(color: Colors.white)),
+          children: [
+            // 手机号
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
+              child: Text(
+                '手机号: ${AppConfig.user?['phone'] ?? ''}',
+                style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 13),
+              ),
+            ),
+            const SizedBox(height: 8),
+            // 邀请好友（已隐藏 enablePremium=false）
+            if (AppConfig.enablePremium)
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(dCtx, 'invite'),
+                child: Row(
+                  children: [
+                    const Icon(Icons.people, color: Color(0xFF4A90D9), size: 20),
+                    const SizedBox(width: 12),
+                    const Text('邀请好友', style: TextStyle(color: Colors.white)),
+                    if (AppConfig.isPremium) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF10B981).withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text('PRO', style: TextStyle(color: Color(0xFF10B981), fontSize: 10, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            // 退出登录
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(dCtx, 'logout'),
+              child: const Row(
+                children: [
+                  Icon(Icons.logout, color: Color(0xFFEF4444), size: 20),
+                  SizedBox(width: 12),
+                  Text('退出登录', style: TextStyle(color: Color(0xFFEF4444))),
+                ],
+              ),
             ),
           ],
         ),
       );
-      if (logout == true && mounted) {
+      if (action == 'logout' && mounted) {
         await AppConfig.logout();
         setState(() {});
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已退出登录')));
+      } else if (action == 'invite' && mounted && AppConfig.enablePremium) {
+        Navigator.push(ctx, MaterialPageRoute(builder: (_) => const InvitePage()));
       }
       return;
     }

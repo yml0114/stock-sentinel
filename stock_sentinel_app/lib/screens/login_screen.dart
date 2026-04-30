@@ -5,7 +5,8 @@ import '../config.dart';
 
 class LoginScreen extends StatefulWidget {
   final VoidCallback onLoginSuccess;
-  const LoginScreen({super.key, required this.onLoginSuccess});
+  final VoidCallback? onSkip;
+  const LoginScreen({super.key, required this.onLoginSuccess, this.onSkip});
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -273,7 +274,11 @@ class _LoginScreenState extends State<LoginScreen> {
                 // 跳过登录
                 TextButton(
                   onPressed: () {
-                    Navigator.of(context).pop();
+                    if (widget.onSkip != null) {
+                      widget.onSkip!();
+                    } else {
+                      Navigator.of(context).pop();
+                    }
                   },
                   child: const Text('先逛逛，稍后登录', style: TextStyle(color: Colors.grey, fontSize: 13)),
                 ),

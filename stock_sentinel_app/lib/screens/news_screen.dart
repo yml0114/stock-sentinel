@@ -407,6 +407,9 @@ class _ArticleSheetState extends State<_ArticleSheet> {
   String _error = '';
   bool _showOriginal = false;
 
+  /// 文章缓存（URL → {data, timestamp}），24小时有效
+  static final Map<String, Map<String, dynamic>> _articleCache = {};
+
   @override
   void initState() {
     super.initState();
@@ -416,6 +419,26 @@ class _ArticleSheetState extends State<_ArticleSheet> {
   }
 
   Future<void> _fetchArticle() async {
+    // 检查本地缓存（24小时有效）
+    final cached = _articleCache[widget.url];
+    if (cached != null) {
+      final cachedAt = cached['_cachedAt'] as int? ?? 0;
+      final age = DateTime.now().millisecondsSinceEpoch - cachedAt;
+      if (age < 24 * 60 * 60 * 1000) {
+        // 缓存命中，直接使用
+        if (!mounted) return;
+        setState(() {
+          _loading = false;
+          _title = cached['title'] ?? widget.initialTitle;
+          _content = (cached['content'] ?? '').toString();
+          _titleEn = (cached['title_en'] ?? '').toString();
+          _contentEn = (cached['content_en'] ?? '').toString();
+          _isTranslated = cached['isTranslated'] ?? false;
+        });
+        return;
+      }
+    }
+
     setState(() { _loading = true; _error = ''; });
     try {
       // 自动翻译模式：translate=true
@@ -430,9 +453,13 @@ class _ArticleSheetState extends State<_ArticleSheet> {
           _titleEn = (result['title_en'] ?? '').toString();
           _contentEn = (result['content_en'] ?? '').toString();
           _isTranslated = result['isTranslated'] ?? false;
+          // 存入缓存
+          _articleCache[widget.url] = {
+            ...result,
+            '_cachedAt': DateTime.now().millisecondsSinceEpoch,
+          };
         } else {
           _error = result['error'] ?? '无法获取正文';
-          // 用列表里的摘要作为兜底
           _content = widget.initialContent;
         }
       });

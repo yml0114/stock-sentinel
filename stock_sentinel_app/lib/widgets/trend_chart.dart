@@ -78,14 +78,16 @@ class _TrendChartState extends State<TrendChart> {
             },
             behavior: HitTestBehavior.opaque,
             child: ClipRect(
-              child: CustomPaint(
-                size: const Size(double.infinity, 250),
-                painter: _TrendPainter(
-                  points: _points,
-                  prevClose: _prevClose,
-                  currencySymbol: widget.currencySymbol,
-                  crosshairIndex: _crosshairIndex,
-                  scale: _scale,
+              child: RepaintBoundary(
+                child: CustomPaint(
+                  size: const Size(double.infinity, 250),
+                  painter: _TrendPainter(
+                    points: _points,
+                    prevClose: _prevClose,
+                    currencySymbol: widget.currencySymbol,
+                    crosshairIndex: _crosshairIndex,
+                    scale: _scale,
+                  ),
                 ),
               ),
             ),
