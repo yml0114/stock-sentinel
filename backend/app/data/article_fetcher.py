@@ -726,6 +726,16 @@ def extract_article(url: str) -> dict:
     # 根据域名选择最优策略
     strategies = []
 
+    # 从中国服务器完全不可达的站点 — 不浪费42秒尝试
+    _SKIP_DOMAINS = ['bloomberg.com', 'reuters.com', 'marketwatch.com',
+                     'wsj.com', 'ft.com', 'nytimes.com', 'cnbc.com',
+                     'seekingalpha.com', 'fool.com']
+    for skip in _SKIP_DOMAINS:
+        if skip in url:
+            result['error'] = f'该源({skip})从当前服务器不可达，请查看摘要'
+            result['success'] = False
+            return result
+
     if 'wallstreetcn.com' in url or 'wallstreetcn' in url:
         strategies.append(('华尔街见闻', _try_wallstreetcn))
 

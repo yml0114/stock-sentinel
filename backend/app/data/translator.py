@@ -253,9 +253,7 @@ def translate_news_items(items: list, source_filter: str = '') -> list:
         if (title and not _is_chinese(title)) or (content and not _is_chinese(content)):
             to_translate.append(item)
 
-    max_translate = 50
-    to_translate = to_translate[:max_translate]
-
+    # 不限制翻译数量，翻译所有英文条目
     if not to_translate:
         return items
 
