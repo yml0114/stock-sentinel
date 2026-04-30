@@ -1,11 +1,10 @@
 """
-翻译模块 v3 — 用AI模型(mimo-v2.5-pro)批量翻译，替代不可靠的免费API
+翻译模块 v3 — 用AI模型批量翻译 + 单条翻译兼容
 """
 import re
 import json
 import logging
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import config
 
@@ -23,19 +22,18 @@ def _is_chinese(text: str) -> bool:
     return chinese_chars / max(len(text), 1) > 0.3
 
 
-def _batch_translate_ai(texts: list[str], batch_size: int = 20) -> dict[str, str]:
-    """用AI模型批量翻译 — 一次请求翻译多条，高效可靠"""
+def _ai_translate(texts: list[str]) -> dict[str, str]:
+    """用AI模型批量翻译"""
     result = {}
     if not texts:
         return result
 
+    # 分批，每批15条（避免超时）
+    batch_size = 15
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
-        # 构建编号列表
         numbered = "\n".join(f"{j+1}. {t}" for j, t in enumerate(batch))
-        prompt = f"""请将以下英文/葡语/德语新闻标题翻译为中文。直接输出翻译结果，保持编号格式，不要添加任何解释。
-
-{numbered}"""
+        prompt = f"翻译为中文，只输出翻译结果，保持编号格式：\n{numbered}"
 
         try:
             resp = requests.post(
@@ -53,31 +51,50 @@ def _batch_translate_ai(texts: list[str], batch_size: int = 20) -> dict[str, str
                 timeout=30,
             )
             data = resp.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            if not content:
-                content = data.get("choices", [{}])[0].get("message", {}).get("reasoning_content", "")
+            msg = data.get("choices", [{}])[0].get("message", {})
+            content = msg.get("content", "")
+            # 思考模型可能把结果放在reasoning_content
+            if not content or not re.search(r'\d+[.、]', content):
+                content = msg.get("reasoning_content", "")
 
-            # 解析编号结果: "1. 中文翻译\n2. 中文翻译"
+            # 解析编号结果
             for line in content.strip().split("\n"):
                 line = line.strip()
-                m = re.match(r'^(\d+)[.\s、]+(.+)', line)
+                if not line:
+                    continue
+                m = re.match(r'^(\d+)[.\s、\)）]+(.+)', line)
                 if m:
                     idx = int(m.group(1)) - 1
                     translated = m.group(2).strip()
-                    if 0 <= idx < len(batch) and translated:
+                    # 清理markdown格式
+                    translated = re.sub(r'\*\*|__', '', translated)
+                    if 0 <= idx < len(batch) and translated and _is_chinese(translated):
                         result[batch[idx]] = translated
 
-            logger.info(f"AI翻译批次 {i//batch_size + 1}: 输入{len(batch)}条, 成功{sum(1 for t in batch if t in result)}条")
+            ok = sum(1 for t in batch if t in result)
+            logger.info(f"AI翻译批次 {i//batch_size + 1}: {ok}/{len(batch)} 成功")
 
         except Exception as e:
-            logger.error(f"AI翻译批次 {i//batch_size + 1} 失败: {e}")
+            logger.error(f"AI翻译批次失败: {e}")
 
     return result
 
 
+def translate_to_zh(text: str) -> str:
+    """单条翻译（兼容旧接口）"""
+    if not text or _is_chinese(text):
+        return text
+    if text in _cache:
+        return _cache[text]
+    result = _ai_translate([text])
+    if text in result:
+        _cache[text] = result[text]
+        return result[text]
+    return text
+
+
 def translate_news_items(items: list, source_filter: str = '') -> list:
-    """批量翻译新闻标题和内容为中文 — 用AI模型，一次搞定"""
-    # 收集需要翻译的文本（去重）
+    """批量翻译新闻标题"""
     to_translate = []
     seen = set()
     for item in items:
@@ -85,7 +102,6 @@ def translate_news_items(items: list, source_filter: str = '') -> list:
             continue
         title = item.get('title', '')
         if title and not _is_chinese(title) and title not in seen:
-            # 检查内存缓存
             if title in _cache:
                 item['title_cn'] = _cache[title]
             else:
@@ -95,20 +111,11 @@ def translate_news_items(items: list, source_filter: str = '') -> list:
     if not to_translate:
         return items
 
-    logger.info(f"AI翻译: {len(to_translate)}条英文标题待翻译")
+    logger.info(f"AI翻译: {len(to_translate)}条待翻译")
+    translations = _ai_translate(to_translate)
 
-    # 批量翻译
-    translations = _batch_translate_ai(to_translate)
-
-    # 更新缓存
     _cache.update(translations)
-    if len(_cache) > _CACHE_MAX:
-        # 简单清理：删除一半旧缓存
-        keys = list(_cache.keys())
-        for k in keys[:len(keys)//2]:
-            del _cache[k]
 
-    # 回填到items
     translated_count = 0
     for item in items:
         title = item.get('title', '')
