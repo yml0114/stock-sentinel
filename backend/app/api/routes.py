@@ -351,8 +351,11 @@ def _format_news_item(item):
 @router.get("/news/raw")
 async def api_get_news_raw(limit: int = Query(80, ge=1, le=500)):
     """获取全部新闻源原始数据（持久化缓存，秒返回）"""
+    from app.data.translator import translate_news_items
     loop = asyncio.get_event_loop()
     items = await loop.run_in_executor(None, get_raw_news, limit)
+    # 翻译英文标题和摘要（后端翻译，比APP端可靠）
+    items = await loop.run_in_executor(None, translate_news_items, items)
     result = [_format_news_item(item) for item in items]
     return {"code": 0, "data": result}
 

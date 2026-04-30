@@ -80,72 +80,21 @@ class NewsService {
         _loaded = true;
         _lastFetch = DateTime.now();
         _totalCount = _news.length;
-        _translatedCount = 0;
+        // 后端已翻译英文标题，直接统计
+        _translatedCount = _news.where((n) =>
+          (n['title_cn'] ?? '').toString().isNotEmpty ||
+          !_translator.isEnglish((n['title'] ?? '').toString())
+        ).length;
         await _saveLocalCache();
-        AppLog.d('News', '新闻刷新: ${_news.length}条');
+        AppLog.d('News', '新闻刷新: ${_news.length}条, 已翻译: $_translatedCount');
         _onUpdate?.call();
-        
-        // 后台逐条翻译英文新闻
-        _translateNewsBackground();
       }
     } catch (e) {
       AppLog.e('News', '新闻刷新失败', e);
     }
   }
 
-  /// 后台翻译新闻列表 — 一次性完成后刷新UI，避免每条翻译都触发重建
-  Future<void> _translateNewsBackground() async {
-    int completed = 0;
-    for (int i = 0; i < _news.length; i++) {
-      final item = _news[i];
-      final title = (item['title'] ?? '').toString();
-      final content = (item['content'] ?? '').toString();
-      
-      // 如果标题已经是中文，跳过
-      if (!_translator.isEnglish(title)) {
-        completed++;
-        continue;
-      }
-      
-      try {
-        // 翻译标题
-        final titleCn = await _translator.translate(title);
-        if (titleCn != title) {
-          item['title_cn'] = titleCn;
-        }
-        
-        // 翻译内容摘要（如果有）
-        if (content.isNotEmpty && _translator.isEnglish(content)) {
-          final contentCn = await _translator.translate(
-            content.length > 200 ? content.substring(0, 200) : content
-          );
-          if (contentCn != content) {
-            item['content_cn'] = contentCn;
-          }
-        }
-        
-        completed++;
-        _translatedCount = completed;
-        
-        // 每翻译5条刷新一次UI
-        if (completed % 5 == 0 || completed == _totalCount) {
-          _onUpdate?.call();
-        }
-        
-        // 小延迟，避免API限流
-        await Future.delayed(const Duration(milliseconds: 100));
-      } catch (e) {
-        completed++;
-        _translatedCount = completed;
-        AppLog.w('News', '翻译失败 [${title.substring(0, title.length > 30 ? 30 : title.length)}]: $e');
-      }
-    }
-    
-    // 最终保存缓存并通知
-    await _saveLocalCache();
-    _onUpdate?.call();
-    AppLog.d('News', '翻译完成: $_translatedCount/$_totalCount');
-  }
+  // 翻译已由后端完成，不再需要APP端逐条翻译
 
   VoidCallback? _onUpdate;
 
