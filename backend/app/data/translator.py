@@ -243,7 +243,7 @@ def _translate_single_item(item: dict) -> dict:
 
 
 def translate_news_items(items: list, source_filter: str = '') -> list:
-    """并发批量翻译新闻标题和内容为中文"""
+    """并发批量翻译新闻标题和内容为中文 — 容错：翻译失败不阻塞新闻返回"""
     to_translate = []
     for item in items:
         if source_filter and source_filter.lower() not in item.get('source', '').lower():
@@ -260,14 +260,28 @@ def translate_news_items(items: list, source_filter: str = '') -> list:
         return items
 
     translated_count = 0
+    failed_count = 0
     futures = {_pool.submit(_translate_single_item, item): item for item in to_translate}
-    for future in as_completed(futures, timeout=60):
-        try:
-            future.result(timeout=15)
-            translated_count += 1
-        except Exception as e:
-            logger.debug(f"翻译单条失败: {e}")
+    try:
+        for future in as_completed(futures, timeout=90):
+            try:
+                future.result(timeout=10)
+                translated_count += 1
+            except Exception:
+                failed_count += 1
+    except Exception as e:
+        # 超时：已完成的保留，未完成的不阻塞
+        for f in futures:
+            if f.done():
+                try:
+                    f.result()
+                    translated_count += 1
+                except Exception:
+                    failed_count += 1
+            else:
+                failed_count += 1
+        logger.warning(f"翻译超时: {translated_count}完成, {failed_count}未完成")
 
     if translated_count > 0:
-        logger.info(f"✅ 并发翻译完成: {translated_count}/{len(to_translate)} 条新闻")
+        logger.info(f"翻译完成: {translated_count}/{len(to_translate)} 条 (失败{failed_count})")
     return items

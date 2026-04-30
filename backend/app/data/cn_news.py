@@ -7,6 +7,7 @@
 import urllib.request
 import json
 import re
+import html as html_module
 import logging
 from datetime import datetime
 
@@ -22,13 +23,9 @@ def _fetch_json(url: str, timeout: int = 10) -> dict:
 
 
 def _strip_html(text: str) -> str:
-    """去除HTML标签"""
+    """去除HTML标签 + 解码HTML实体"""
+    text = html_module.unescape(text)  # &amp; → &, &#x2019; → ', &apos; → '
     text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'&nbsp;', ' ', text)
-    text = re.sub(r'&amp;', '&', text)
-    text = re.sub(r'&lt;', '<', text)
-    text = re.sub(r'&gt;', '>', text)
-    text = re.sub(r'&#\d+;', '', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 

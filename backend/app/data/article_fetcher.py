@@ -13,6 +13,7 @@ trafilatura 优势：
 """
 import re
 import json
+import html as html_module
 import logging
 import urllib.request
 import urllib.parse
@@ -79,9 +80,19 @@ _PUNCT = set('，。、；：""\u2018\u2019\u201c\u201d（）《》【】！？~
 
 
 def _clean_text(text: str) -> str:
-    """通用文本清理：去噪音行 + 截断尾部"""
+    """通用文本清理：去噪音行 + 截断尾部 + HTML实体解码"""
     if not text:
         return ''
+
+    # HTML 实体解码（&amp; → &，&lt; → <，&#x2019; → '，等）
+    text = html_module.unescape(text)
+
+    # 去除残留的HTML标签
+    text = re.sub(r'<[^>]+>', '', text)
+
+    # 去除连续多余空白
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
 
     lines = text.split('\n')
     cleaned = []
@@ -106,6 +117,21 @@ def _clean_text(text: str) -> str:
         if len(s) < 60 and not re.search(r'[，。！？；：]', s) and re.match(r'^[\u4e00-\u9fff\w\s/·+]+$', s):
             if len(s.split()) >= 3:
                 continue
+        # 纯英文短行噪音（导航/菜单/广告）
+        if len(s) < 50 and re.match(r'^[A-Za-z\s\-–—·/]+$'  , s) and not re.search(r'[.!?]', s):
+            continue
+        # 版权/免责声明行
+        if re.match(r'^(Copyright|©|All rights reserved|Disclaimer|免责|风险提示|投资有风险)', s, re.IGNORECASE):
+            continue
+        # 推荐/广告行
+        if re.match(r'^(推荐阅读|猜你喜欢|热门推荐|您可能感兴趣|相关推荐|点击进入|了解更多|立即查看)', s):
+            continue
+        # 纯日期时间行（如 "2026-04-30 15:30"）
+        if re.match(r'^\d{4}[-/]\d{2}[-/]\d{2}[\sT]\d{2}:\d{2}(:\d{2})?$', s):
+            continue
+        # 编辑/记者署名行（短，且在正文前面）
+        if len(s) < 30 and re.match(r'^(记者|编辑|作者|来源|文/|图/|摄影/)', s):
+            continue
         cleaned.append(line)
 
     # 段落级去重（财新等付费墙预览内容经常重复段落）

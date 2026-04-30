@@ -528,14 +528,14 @@ def fetch_rss_news() -> list[dict]:
                 
                 title = ''
                 if title_m:
-                    title = (title_m.group(1) or title_m.group(2) or '').strip()
+                    title = html_module.unescape((title_m.group(1) or title_m.group(2) or '')).strip()
                 
                 if not title or len(title) < 10 or title in ('Top Stories', 'US Top News and Analysis'):
                     continue
                 
                 desc = ''
                 if desc_m:
-                    desc = re.sub(r'<[^>]+>', '', (desc_m.group(1) or desc_m.group(2) or '')).strip()
+                    desc = html_module.unescape(re.sub(r'<[^>]+>', '', (desc_m.group(1) or desc_m.group(2) or ''))).strip()
                 
                 items.append({
                     'source': name,
