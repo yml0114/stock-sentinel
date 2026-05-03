@@ -1,12 +1,15 @@
-"""
-翻译模块 v3 — 用AI模型批量翻译 + 单条翻译兼容
-"""
+"""翻译模块 v4 — Google Translate 免费API（HK服务器直连）"""
+
+from __future__ import annotations
+
 import re
 import json
 import logging
-import requests
+import urllib.parse
+import concurrent.futures
+import time
 
-import config
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -14,68 +17,86 @@ logger = logging.getLogger(__name__)
 _cache: dict[str, str] = {}
 _CACHE_MAX = 5000
 
+# Google Translate API 参数
+_GOOGLE_TL = "zh-CN"  # 目标语言
+_GOOGLE_SL = "en"     # 源语言
+_MAX_WORKERS = 5      # 并发请求数
+_REQUEST_DELAY = 0.2  # 请求间隔（秒），避免被限流
+
 
 def _is_chinese(text: str) -> bool:
+    """判断是否主要为中文"""
     if not text:
         return True
     chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
     return chinese_chars / max(len(text), 1) > 0.3
 
 
-def _ai_translate(texts: list[str]) -> dict[str, str]:
-    """用AI模型批量翻译"""
+def _google_translate_single(text: str):
+    """使用Google Translate免费API翻译单条文本"""
+    if not text or text.strip() == '':
+        return None
+
+    try:
+        url = (
+            f"https://translate.googleapis.com/translate_a/single"
+            f"?client=gtx"
+            f"&sl={_GOOGLE_SL}"
+            f"&tl={_GOOGLE_TL}"
+            f"&dt=t"
+            f"&q={urllib.parse.quote(text[:2000])}"  # 限制长度避免URL过长
+        )
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            logger.warning(f"Google翻译HTTP {resp.status_code}: {text[:40]}")
+            return None
+
+        data = resp.json()
+        # 响应格式: [[["翻译结果","原文",...]], null, "en", ...]
+        if data and data[0] and data[0][0]:
+            translated = data[0][0][0]
+            if translated and translated.strip():
+                return translated.strip()
+    except Exception as e:
+        logger.debug(f"Google翻译失败: {e} — {text[:40]}")
+
+    return None
+
+
+def _google_translate_batch(texts: list[str]) -> dict[str, str]:
+    """批量翻译 — 并发请求，自动限流"""
     result = {}
     if not texts:
         return result
 
-    # 分批，每批15条（避免超时）
-    batch_size = 15
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
-        numbered = "\n".join(f"{j+1}. {t}" for j, t in enumerate(batch))
-        prompt = f"翻译为中文，只输出翻译结果，保持编号格式：\n{numbered}"
+    # 去重
+    unique = list(dict.fromkeys(texts))
+    logger.info(f"🌐 Google翻译: {len(unique)}条 (并发{_MAX_WORKERS}线程)")
 
-        try:
-            resp = requests.post(
-                f"{config.AI_API_URL}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {config.AI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "mimo-v2.5",  # 用非思考模型，避免reasoning消耗所有tokens
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 2000,
-                    "temperature": 0.1,
-                },
-                timeout=30,
-            )
-            data = resp.json()
-            msg = data.get("choices", [{}])[0].get("message", {})
-            content = msg.get("content", "")
-            # 思考模型可能把结果放在reasoning_content
-            if not content or not re.search(r'\d+[.、]', content):
-                content = msg.get("reasoning_content", "")
+    def _translate_one(t: str) -> tuple[str, str | None]:
+        time.sleep(_REQUEST_DELAY)  # 限流
+        translated = _google_translate_single(t)
+        return t, translated
 
-            # 解析编号结果
-            for line in content.strip().split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                m = re.match(r'^(\d+)[.\s、\)）]+(.+)', line)
-                if m:
-                    idx = int(m.group(1)) - 1
-                    translated = m.group(2).strip()
-                    # 清理markdown格式
-                    translated = re.sub(r'\*\*|__', '', translated)
-                    if 0 <= idx < len(batch) and translated and _is_chinese(translated):
-                        result[batch[idx]] = translated
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+        futures = {executor.submit(_translate_one, t): t for t in unique}
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                orig, translated = future.result(timeout=15)
+                if translated and _is_chinese(translated):
+                    result[orig] = translated
+                else:
+                    logger.debug(f"翻译结果非中文或为空: {orig[:40]} → {str(translated)[:40] if translated else 'None'}")
+            except Exception as e:
+                orig = futures[future]
+                logger.debug(f"翻译线程异常 [{orig[:40]}]: {e}")
 
-            ok = sum(1 for t in batch if t in result)
-            logger.info(f"AI翻译批次 {i//batch_size + 1}: {ok}/{len(batch)} 成功")
-
-        except Exception as e:
-            logger.error(f"AI翻译批次失败: {e}")
+    ok = len(result)
+    fail = len(unique) - ok
+    if fail > 0:
+        logger.info(f"  成功: {ok}/{len(unique)}, 失败: {fail}")
+    else:
+        logger.info(f"  成功: {ok}/{len(unique)} ✅")
 
     return result
 
@@ -86,15 +107,18 @@ def translate_to_zh(text: str) -> str:
         return text
     if text in _cache:
         return _cache[text]
-    result = _ai_translate([text])
-    if text in result:
-        _cache[text] = result[text]
-        return result[text]
+    translated = _google_translate_single(text)
+    if translated:
+        _cache[text] = translated
+        # 控制缓存大小
+        if len(_cache) > _CACHE_MAX:
+            _cache.clear()
+        return translated
     return text
 
 
 def translate_news_items(items: list, source_filter: str = '') -> list:
-    """批量翻译新闻标题"""
+    """批量翻译新闻标题（和可能的内容摘要）"""
     to_translate = []
     seen = set()
     for item in items:
@@ -107,14 +131,29 @@ def translate_news_items(items: list, source_filter: str = '') -> list:
             else:
                 to_translate.append(title)
                 seen.add(title)
+        # 也翻译content摘要（如果是英文且长度适中）
+        content = item.get('content', '')[:500]
+        if content and not _is_chinese(content) and content not in seen and len(content) > 50:
+            if content in _cache:
+                item['content_cn'] = _cache[content]
+            else:
+                to_translate.append(content)
+                seen.add(content)
 
     if not to_translate:
         return items
 
-    logger.info(f"AI翻译: {len(to_translate)}条待翻译")
-    translations = _ai_translate(to_translate)
+    translations = _google_translate_batch(to_translate)
 
+    # 更新缓存
     _cache.update(translations)
+    if len(_cache) > _CACHE_MAX:
+        # 只保留最近的一半
+        keys_to_keep = list(_cache.keys())[-_CACHE_MAX // 2:]
+        _cache.clear()
+        for k in keys_to_keep:
+            if k in translations:
+                _cache[k] = translations[k]
 
     translated_count = 0
     for item in items:
@@ -122,6 +161,10 @@ def translate_news_items(items: list, source_filter: str = '') -> list:
         if title in translations:
             item['title_cn'] = translations[title]
             translated_count += 1
+        content = item.get('content', '')[:500]
+        if content in translations:
+            item['content_cn'] = translations[content]
 
-    logger.info(f"翻译完成: {translated_count}/{len(to_translate)} 条")
+    content_translated = sum(1 for item in items if item.get('content', '')[:500] in translations)
+    logger.info(f"翻译完成: {translated_count}条标题 + {content_translated}条内容")
     return items
