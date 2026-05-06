@@ -831,11 +831,19 @@ def extract_article(url: str) -> dict:
 
     # 通用策略：trafilatura 优先，付费墙站点多两条后手
     if _is_paywall(url):
-        strategies.append(('Google缓存', lambda u: _try_google_cache(u)))
+        strategies.append(('Jina Reader', lambda u: _try_jina_reader(u)))
     strategies.append(('trafilatura', _try_trafilatura))
     strategies.append(('直接抓取', _try_direct_html))
     if _is_paywall(url):
-        strategies.append(('Jina Reader', lambda u: _try_jina_reader(u)))
+        strategies.append(('Google缓存', lambda u: _try_google_cache(u)))
+
+    # 垃圾内容关键词 — 重定向页/bot检测页/空壳页
+    _GARBAGE_PHRASES = [
+        '请点击', '正在跳转', '如果.*没有被重定向', '请稍候',
+        'if you are not redirected', 'please click', 'javascript is required',
+        'enable javascript', 'captcha', 'access denied', 'blocked',
+        'subscribe to continue', 'sign in to continue reading',
+    ]
 
     for name, fn in strategies:
         try:
@@ -845,6 +853,14 @@ def extract_article(url: str) -> dict:
             if text and len(text) > 100:
                 text = _clean_text(text)
                 if len(text) > 100:
+                    # 过滤垃圾内容（重定向/bot检测页面）
+                    text_lower = text[:500].lower()
+                    is_garbage = any(
+                        re.search(p, text_lower, re.IGNORECASE) for p in _GARBAGE_PHRASES
+                    )
+                    if is_garbage:
+                        logger.debug(f"⚠️ [{name}] 垃圾内容（重定向/bot检测）: {url[:60]}")
+                        continue
                     result['title'] = _clean_title(title)
                     result['content'] = text[:10000]  # 上限10K
                     result['success'] = True
