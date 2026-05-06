@@ -483,6 +483,12 @@ RSS_SOURCES = [
     ('MarketWatch', 'https://feeds.marketwatch.com/marketwatch/topstories/'),
     ('FXStreet', 'https://www.fxstreet.com/rss/news'),
     ('SeekingAlpha', 'https://seekingalpha.com/market_currents.xml'),
+    # 免费英文财经源（无付费墙）
+    ('Yahoo Finance', 'https://finance.yahoo.com/news/rssindex'),
+    ('Investing.com', 'https://www.investing.com/rss/news.rss'),
+    ('The Guardian', 'https://www.theguardian.com/business/rss'),
+    ('CNBC World', 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362'),
+    ('Reuters Business', 'https://rsshub.rssforever.com/reuters/business'),
     # 财新 — 通过RSSHub镜像免费获取全文（无需订阅）
     ('财新', 'https://rsshub.rssforever.com/caixin/latest'),
 ]

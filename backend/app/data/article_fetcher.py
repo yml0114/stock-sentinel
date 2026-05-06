@@ -23,11 +23,22 @@ import trafilatura
 logger = logging.getLogger(__name__)
 
 _UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+_GOOGLEBOT_UA = 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'
 _HEADERS = {
     'User-Agent': _UA,
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=8',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 }
+# 付费墙站点用Googlebot UA — Bloomberg/MarketWatch/CNBC等对Google返回全文
+_HEADERS_BOT = {
+    'User-Agent': _GOOGLEBOT_UA,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=8',
+    'Accept-Language': 'en-US,en;q=0.9',
+}
+# 已知需要Googlebot UA的付费墙域名
+_PAYWALL_DOMAINS = ['bloomberg.com', 'marketwatch.com', 'cnbc.com', 'wsj.com',
+                     'ft.com', 'nytimes.com', 'reuters.com', 'seekingalpha.com',
+                     'fool.com', 'barrons.com', 'businessinsider.com']
 
 
 # ── 噪音清理 ──
@@ -255,10 +266,86 @@ def _try_wallstreetcn(url: str) -> dict:
 
 # ── 通用 trafilatura 抓取 ──
 
-def _try_trafilatura(url: str) -> dict:
-    """策略: trafilatura — 业界最强正文提取"""
+def _is_paywall(url: str) -> bool:
+    """判断是否是付费墙站点"""
+    return any(d in url for d in _PAYWALL_DOMAINS)
+
+
+def _try_google_cache(url: str) -> dict:
+    """策略: Google Cache — 付费墙网站的缓存版通常有全文"""
     try:
-        downloaded = trafilatura.fetch_url(url)
+        import requests as _req
+        cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{url}"
+        resp = _req.get(cache_url, headers={
+            'User-Agent': _GOOGLEBOT_UA,
+            'Accept': 'text/html,*/*',
+        }, timeout=12)
+        if resp.status_code != 200:
+            return {}
+        html = resp.text
+        if len(html) < 500:
+            return {}
+        text = trafilatura.extract(html, include_comments=False, favor_recall=True)
+        if not text or len(text) < 100:
+            return {}
+        title = text.split('\n')[0].strip()[:80]
+        return {'title': title, 'text': text, 'length': len(text)}
+    except Exception as e:
+        logger.debug(f"Google Cache失败: {e}")
+        return {}
+
+
+def _try_jina_reader(url: str) -> dict:
+    """策略: Jina Reader API — 免费全文提取服务，能绕过部分付费墙"""
+    try:
+        import requests as _req
+        jina_url = f"https://r.jina.ai/{url}"
+        resp = _req.get(jina_url, headers={
+            'Accept': 'text/plain',
+            'X-Return-Format': 'text',
+        }, timeout=15)
+        if resp.status_code != 200:
+            return {}
+        body = resp.text
+        if len(body) < 200:
+            return {}
+        # 去掉Jina的头部元数据（Title:/URL Source:等行）
+        lines = body.split('\n')
+        content_start = 0
+        for i, line in enumerate(lines):
+            if line.startswith('Markdown Content:') or (line.strip() == '' and i > 3):
+                content_start = i + 1
+                break
+        text = '\n'.join(lines[content_start:]).strip()
+        if len(text) < 100:
+            return {}
+        # 提取标题（第一行非空）
+        title = ''
+        for line in lines[:5]:
+            if line.startswith('Title:'):
+                title = line.replace('Title:', '').strip()
+                break
+        if not title:
+            title = text.split('\n')[0].strip()[:80]
+        return {'title': title, 'text': text, 'length': len(text)}
+    except Exception as e:
+        logger.debug(f"Jina Reader失败: {e}")
+        return {}
+
+
+def _try_trafilatura(url: str) -> dict:
+    """策略: trafilatura — 业界最强正文提取，付费墙站点用Googlebot UA"""
+    try:
+        # 付费墙站点用Googlebot UA绕过软付费墙
+        if _is_paywall(url):
+            import requests as _req
+            resp = _req.get(url, headers=_HEADERS_BOT, timeout=15)
+            if resp.status_code == 200:
+                downloaded = resp.text
+            else:
+                return {}
+        else:
+            downloaded = trafilatura.fetch_url(url)
         if not downloaded:
             return {}
 
@@ -298,9 +385,10 @@ def _try_trafilatura(url: str) -> dict:
 
 
 def _try_direct_html(url: str) -> dict:
-    """策略: 直接抓取HTML + trafilatura解析"""
+    """策略: 直接抓取HTML + trafilatura解析（付费墙用Googlebot UA）"""
     try:
-        req = urllib.request.Request(url, headers=_HEADERS)
+        headers = _HEADERS_BOT if _is_paywall(url) else _HEADERS
+        req = urllib.request.Request(url, headers=headers)
         resp = urllib.request.urlopen(req, timeout=12)
         html = resp.read().decode('utf-8', errors='ignore')
         if not html or len(html) < 500:
@@ -741,9 +829,13 @@ def extract_article(url: str) -> dict:
     if 'cls.cn' in url:
         strategies.append(('财联社', _try_cls))
 
-    # 通用策略：trafilatura 优先
+    # 通用策略：trafilatura 优先，付费墙站点多两条后手
+    if _is_paywall(url):
+        strategies.append(('Google缓存', lambda u: _try_google_cache(u)))
     strategies.append(('trafilatura', _try_trafilatura))
     strategies.append(('直接抓取', _try_direct_html))
+    if _is_paywall(url):
+        strategies.append(('Jina Reader', lambda u: _try_jina_reader(u)))
 
     for name, fn in strategies:
         try:
