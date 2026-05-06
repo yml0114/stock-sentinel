@@ -3,8 +3,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class AppConfig {
   // 美西服务器（新主力）
-  static const String apiBase = 'http://38.76.172.17:8000/api';
-  static const String wsUrl = 'ws://38.76.172.17:8000/api/ws';
+  static const String apiBase = 'http://38.76.172.17/api';
+  static const String wsUrl = 'ws://38.76.172.17/api/ws';
   // Android模拟器
   // static const String apiBase = 'http://10.0.2.2:8000/api';
   // static const String wsUrl = 'ws://10.0.2.2:8000/api/ws';
